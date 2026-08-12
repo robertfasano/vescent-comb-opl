@@ -85,42 +85,42 @@ def decode_error(code: int) -> List[str]:
 
 MONITOR_PARAMS: Tuple[Param, ...] = (
     # --- system level -------------------------------------------------------
-    Param("master_mode",        "MSTRCTL?",       parse_int,   "system", "enum"),
+    # Param("master_mode",        "MSTRCTL?",       parse_int,   "system", "enum"),
     Param("pzt_hv_enabled",     "PZT_ENABLE?",    parse_bool,  "system", "bool"),
     Param("pzt_slow_servo_on",  "PZT_SLSRVEN?",   parse_bool,  "system", "bool"),
     Param("curr_slow_servo_on", "CURR_SLSRVEN?",  parse_bool,  "system", "bool"),
 
     # --- cavity -------------------------------------------------------------
-    Param("cav_error_code",     "CAVERROR? 1",    parse_int,   "cavity", "code"),
-    Param("cav_temp_setpoint",  "CAVTEMPSET? 0",  parse_float, "cavity", "degC"),
+    # Param("cav_error_code",     "CAVERROR? 1",    parse_int,   "cavity", "code"),
+    # Param("cav_temp_setpoint",  "CAVTEMPSET? 0",  parse_float, "cavity", "degC"),
     Param("cav_temp",           "CAVTEMP? 0",     parse_float, "cavity", "degC"),
-    Param("cav_temp_error",     "CAVTERROR? 0",   parse_float, "cavity", "mK"),
-    Param("cav_tec_current",    "CAVCURRENT? 0",  parse_float, "cavity", "A"),
-    Param("cav_slow_servo_gain","CAVSLSRVGN? 0",  parse_float, "cavity", "dB"),
-    Param("cav_slow_servo_offs","CAVSLSRVOS? 0",  parse_float, "cavity", "V"),
-    Param("cav_dc_bias_voltage","CAVDCBIASV? 1",  parse_float, "cavity", "V"),
-    Param("cav_output_voltage", "CAVOUTVOLT? 1",  parse_float, "cavity", "V"),
+    # Param("cav_temp_error",     "CAVTERROR? 0",   parse_float, "cavity", "mK"),
+    # Param("cav_tec_current",    "CAVCURRENT? 0",  parse_float, "cavity", "A"),
+    # Param("cav_slow_servo_gain","CAVSLSRVGN? 0",  parse_float, "cavity", "dB"),
+    # Param("cav_slow_servo_offs","CAVSLSRVOS? 0",  parse_float, "cavity", "V"),
+    # Param("cav_dc_bias_voltage","CAVDCBIASV? 1",  parse_float, "cavity", "V"),
+    # Param("cav_output_voltage", "CAVOUTVOLT? 1",  parse_float, "cavity", "V"),
 
     # --- oscillator laser ---------------------------------------------------
-    Param("osc_error_code",     "OSCERROR? 1",    parse_int,   "oscillator", "code"),
-    Param("osc_temp",           "OSCTEMP? 0",     parse_float, "oscillator", "degC"),
-    Param("osc_temp_error",     "OSCTERROR? 0",   parse_float, "oscillator", "degC"),
-    Param("osc_tec_current",    "OSCTCURR? 0",    parse_float, "oscillator", "A"),
-    Param("osc_mod_current",    "OSCMODCURR?",    parse_float, "oscillator", "mA"),
-    Param("osc_current_setpt",  "OSCCCURSET? 1",  parse_float, "oscillator", "A"),
+    # Param("osc_error_code",     "OSCERROR? 1",    parse_int,   "oscillator", "code"),
+    # Param("osc_temp",           "OSCTEMP? 0",     parse_float, "oscillator", "degC"),
+    # Param("osc_temp_error",     "OSCTERROR? 0",   parse_float, "oscillator", "degC"),
+    # Param("osc_tec_current",    "OSCTCURR? 0",    parse_float, "oscillator", "A"),
+    # Param("osc_mod_current",    "OSCMODCURR?",    parse_float, "oscillator", "mA"),
+    # Param("osc_current_setpt",  "OSCCCURSET? 1",  parse_float, "oscillator", "A"),
     Param("osc_output_current", "OSCCCURR? 1",    parse_float, "oscillator", "mA"),
-    Param("osc_compliance_volt","OSCCVOLTCC? 1",  parse_float, "oscillator", "V"),
-    Param("osc_interlock_ok",   "OSCINTERLK?",    parse_bool,  "oscillator", "bool"),
+    # Param("osc_compliance_volt","OSCCVOLTCC? 1",  parse_float, "oscillator", "V"),
+    # Param("osc_interlock_ok",   "OSCINTERLK?",    parse_bool,  "oscillator", "bool"),
 
     # --- amplifier laser ----------------------------------------------------
-    Param("amp_error_code",     "AMPERROR? 1",    parse_int,   "amplifier", "code"),
-    Param("amp_temp",           "AMPTEMP? 0",     parse_float, "amplifier", "degC"),
-    Param("amp_temp_error",     "AMPTERROR? 0",   parse_float, "amplifier", "degC"),
-    Param("amp_tec_current",    "AMPTCURR? 0",    parse_float, "amplifier", "A"),
-    Param("amp_current_setpt",  "AMPCCURSET? 1",  parse_float, "amplifier", "A"),
-    Param("amp_output_current", "AMPCCURR? 1",    parse_float, "amplifier", "mA"),
-    Param("amp_compliance_volt","AMPCVOLTCC? 1",  parse_float, "amplifier", "V"),
-    Param("amp_interlock_ok",   "AMPINTERLK?",    parse_bool,  "amplifier", "bool"),
+    # Param("amp_error_code",     "AMPERROR? 1",    parse_int,   "amplifier", "code"),
+    # Param("amp_temp",           "AMPTEMP? 0",     parse_float, "amplifier", "degC"),
+    # Param("amp_temp_error",     "AMPTERROR? 0",   parse_float, "amplifier", "degC"),
+    # Param("amp_tec_current",    "AMPTCURR? 0",    parse_float, "amplifier", "A"),
+    # Param("amp_current_setpt",  "AMPCCURSET? 1",  parse_float, "amplifier", "A"),
+    # Param("amp_output_current", "AMPCCURR? 1",    parse_float, "amplifier", "mA"),
+    # Param("amp_compliance_volt","AMPCVOLTCC? 1",  parse_float, "amplifier", "V"),
+    # Param("amp_interlock_ok",   "AMPINTERLK?",    parse_bool,  "amplifier", "bool"),
 )
 
 
