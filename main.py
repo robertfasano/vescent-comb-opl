@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-main.py -- read-only monitor for the Vescent RUBRIComb, SLICE-FPGA, and one
-or more SLICE-OPLs.
+main.py -- monitor and on-demand API for the Vescent RUBRIComb, SLICE-FPGA,
+and one or more SLICE-OPLs.
 
 Instruments, serial/network settings, and InfluxDB connection are all defined
 in a YAML config file rather than passed on the command line, so a lab
@@ -9,30 +9,30 @@ running several SLICE-OPL channels doesn't need a wall of flags -- each unit
 just gets an entry with its own name (Influx measurement) and COM port. See
 config.yaml for the full schema.
 
-STRICTLY READ-ONLY
-------------------
-This script cannot change instrument state:
-  * every device is constructed with read_only=True, which makes the transport
-    layer refuse any command that is not on the read allowlist -- setters,
-    *RST, #SAVESETTINGS, NOCP, DDSAUTO, _SELFCAL and _FACTORY all raise
-    ReadOnlyError before a byte is transmitted;
-  * no startup, shutdown, or laser-enable sequence is invoked;
-  * serial ports are opened with DTR and RTS deasserted, so opening the port
-    does not pulse a reset into the USB front end.
-Running it twice, or interrupting it mid-sweep, leaves the hardware exactly as
-it was.
+main.py itself only ever calls read_all() against MONITOR_PARAMS, plus
+whatever the HTTP API dispatches on a caller's behalf -- see below for what
+that covers.
 
-One caveat for the SLICE-FPGA: its command set is undocumented, so its
-read_only guard is a heuristic (blocks anything not ending in '?') rather than
-the serial drivers' allowlist. That's still enough to cover this script, since
-it only ever sends the '?'-terminated commands in slice_fpga.MONITOR_PARAMS.
+Optional HTTP API (see api.py)
+-------------------------------
+In continuous mode, an on-demand HTTP API can run alongside the periodic
+Influx sweep (config.yaml's `api:` section; off by --once). GET requests
+trigger an immediate hardware read/write, not a cached value:
+
+    GET /rubricomb/cav_temp            -> read cav_temp right now
+    GET /rubricomb/cav_temp/24.5       -> write 24.5, then re-read it
+
+A field only accepts writes if its driver's MONITOR_PARAMS entry has
+readonly=False *and* a setter wired up -- right now, only rubricomb.py's
+cav_temp. Everything else 405s.
 
 Usage
 -----
     # one snapshot of every configured instrument, printed, nothing written
     python main.py --once --dry-run
 
-    # continuous logging to Influx every 10 s (interval set in the config)
+    # continuous logging to Influx every 10 s (interval set in the config),
+    # plus the HTTP API if config.yaml's api.enabled is true
     python main.py -v
 
     # use a config file that isn't ./config.yaml
@@ -70,8 +70,8 @@ DEFAULT_SERIAL: Dict[str, Any] = dict(baud=115200, timeout=2.0, assert_dtr=False
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Read-only monitor for the Vescent RUBRIComb and one or "
-                    "more SLICE-OPLs, configured from a YAML file",
+        description="Monitor and on-demand API for the Vescent RUBRIComb and "
+                    "one or more SLICE-OPLs, configured from a YAML file",
     )
     p.add_argument("-c", "--config", default="config.yaml",
                    help="path to the YAML config file (default: config.yaml)")
@@ -96,7 +96,6 @@ def _serial_kwargs(cfg: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]
         baudrate=entry.get("baud", common["baud"]),
         timeout=entry.get("timeout", common["timeout"]),
         assert_dtr=entry.get("assert_dtr", common["assert_dtr"]),
-        read_only=True,   # not configurable on purpose: this script only reads
     )
 
 
@@ -153,7 +152,6 @@ def build_devices(cfg: Dict[str, Any]) -> Optional[List[MonitoredDevice]]:
             host=slice_fpga_cfg.get("host", SliceFPGA.DEFAULT_HOST),
             port=slice_fpga_cfg.get("port", SliceFPGA.DEFAULT_PORT),
             timeout=slice_fpga_cfg.get("timeout", 2.0),
-            read_only=True,   # not configurable on purpose: this script only reads
         )
         devices.append(MonitoredDevice(slice_fpga_cfg.get("measurement", "slice_fpga"), fpga))
 
@@ -169,6 +167,33 @@ def build_devices(cfg: Dict[str, Any]) -> Optional[List[MonitoredDevice]]:
         devices.append(MonitoredDevice(name, opl))
 
     return devices
+
+
+def start_api(devices: List[MonitoredDevice], api_cfg: Dict[str, Any]) -> Optional[Any]:
+    """Start the HTTP API in a background thread. Returns the uvicorn Server
+    (so callers could stop it, though it's a daemon thread and dies with the
+    process), or None if the API is disabled or fastapi/uvicorn aren't
+    installed -- either way, the caller keeps running without it."""
+    if not api_cfg.get("enabled", True):
+        return None
+    try:
+        import uvicorn
+        from api import create_app
+    except ImportError as exc:
+        log.error("HTTP API enabled in config but not usable (%s) -- "
+                  "run `pip install -r requirements.txt` for fastapi/uvicorn. "
+                  "Continuing without it.", exc)
+        return None
+
+    host = api_cfg.get("host", "127.0.0.1")
+    port = api_cfg.get("port", 1993)
+    app = create_app(devices)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name="vescent-api", daemon=True)
+    thread.start()
+    log.info("HTTP API listening on http://%s:%s", host, port)
+    return server
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -214,6 +239,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print(f"{entry.measurement}: {n_ok} fields, {n_fail} failures",
                           file=sys.stderr)
             else:
+                # Only in continuous mode -- a single --once sweep exits right
+                # after, so a server thread would never get a chance to serve
+                # anything.
+                start_api(devices, cfg.get("api") or {})
                 interval = (cfg.get("polling") or {}).get("interval", 10.0)
                 monitor(devices, sink, interval=interval, stop_event=stop)
         except KeyboardInterrupt:

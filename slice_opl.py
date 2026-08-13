@@ -18,14 +18,14 @@ Covers the ASCII serial API exposed on the rear-panel USB interface:
 Transport, parsing, and Influx plumbing live in vescent_serial.py.
 Run main.py to poll this instrument alongside the RUBRIComb.
 
-Connections are READ-ONLY unless constructed with read_only=False; every
-setter below is blocked on a read-only connection.
+Every setter below sends as soon as it's called. What the HTTP API will
+write on a caller's behalf is controlled per field, via MONITOR_PARAMS
+(Param.readonly / Param.setter).
 
-Two API quirks worth knowing, both handled here:
-  * READVOLT is a *read* command that does not end in '?', so it is declared
-    read-safe explicitly.
-  * NOCP, DDSAUTO, _SELFCAL and _FACTORY *change state* and also do not end in
-    '?', so they are never treated as reads.
+One API quirk worth knowing: READVOLT is a *read* command that does not end
+in '?', while NOCP, DDSAUTO, _SELFCAL and _FACTORY *change state* and also
+don't end in '?' -- the '?' suffix is not a reliable read/write signal on
+this instrument, for anyone building on top of these methods.
 """
 
 from __future__ import annotations
@@ -130,96 +130,100 @@ def _nearest(value: float, choices: Sequence[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Parameter table -- everything the monitoring loop polls.
-# Comment out any line you do not want logged; the rest stays here for
-# reference. All entries are reads, so the table is safe to sweep against a
-# read-only connection.
+# Parameter table -- every readable field, not just the ones actively logged.
+# poll=False keeps an entry out of the periodic monitoring sweep while
+# leaving it in this table, documented and queryable on demand.
+#
+# readonly=True (the default) blocks a field from ever being written through
+# anything that consults the flag. Nothing here has readonly=False yet --
+# rubricomb.py's cav_temp is deliberately the only field open for writing
+# right now, to test write support against before opening up more.
 # ---------------------------------------------------------------------------
 
 MONITOR_PARAMS: Tuple[Param, ...] = (
     # --- general operation --------------------------------------------------
-    # Param("servo_on",            "SERVO?",     parse_bool,  "general", "bool"),
+    Param("servo_on",            "SERVO?",     parse_bool,  "general", "bool", poll=False),
     Param("beat_note_target",    "BNTGT?",     parse_float, "general", "MHz"),
 
     # --- ADC monitors (READVOLT; the fast-moving diagnostics) ---------------
-    # Param("adc_error_signal",    "READVOLT 1", parse_float, "adc", "V"),
+    Param("adc_error_signal",    "READVOLT 1", parse_float, "adc", "V", poll=False),
     Param("adc_error_signal_8x", "READVOLT 2", parse_float, "adc", "V"),
-    # Param("adc_integrator_mon",  "READVOLT 3", parse_float, "adc", "V"),
+    Param("adc_integrator_mon",  "READVOLT 3", parse_float, "adc", "V", poll=False),
     Param("adc_pll_output",      "READVOLT 4", parse_float, "adc", "V"),
     Param("adc_aux_output",      "READVOLT 5", parse_float, "adc", "V"),
-    # Param("adc_vga_input",       "READVOLT 6", parse_float, "adc", "V"),
-    # Param("adc_vga_output_mon",  "READVOLT 7", parse_float, "adc", "V"),
-    # Param("adc_ground",          "READVOLT 8", parse_float, "adc", "V"),
+    Param("adc_vga_input",       "READVOLT 6", parse_float, "adc", "V", poll=False),
+    Param("adc_vga_output_mon",  "READVOLT 7", parse_float, "adc", "V", poll=False),
+    Param("adc_ground",          "READVOLT 8", parse_float, "adc", "V", poll=False),
 
     # --- PLL servo filter ---------------------------------------------------
-    # Param("pll_inverted",        "PLLINVT?",   parse_bool,  "pll", "bool"),
-    # Param("pll_gain",            "PLLGAIN?",   parse_float, "pll", "dB"),
-    # Param("pll_int_corner",      "INT?",       parse_float, "pll", "Hz"),
-    # Param("pll_diff_corner",     "DIFF?",      parse_float, "pll", "Hz"),
-    # Param("pll_gain_clamped",    "GAINLIM?",   parse_bool,  "pll", "bool"),
-    # Param("pll_bias",            "PLLBIAS?",   parse_float, "pll", "V"),
-    # Param("pll_out_max",         "PLLMAX?",    parse_float, "pll", "V"),
-    # Param("pll_out_min",         "PLLMIN?",    parse_float, "pll", "V"),
-    # Param("lock_range",          "LOCKRNG?",   parse_float, "pll", "V"),
+    Param("pll_inverted",        "PLLINVT?",   parse_bool,  "pll", "bool", poll=False),
+    Param("pll_gain",            "PLLGAIN?",   parse_float, "pll", "dB",   poll=False),
+    Param("pll_int_corner",      "INT?",       parse_float, "pll", "Hz",   poll=False),
+    Param("pll_diff_corner",     "DIFF?",      parse_float, "pll", "Hz",   poll=False),
+    Param("pll_gain_clamped",    "GAINLIM?",   parse_bool,  "pll", "bool", poll=False),
+    Param("pll_bias",            "PLLBIAS?",   parse_float, "pll", "V",    poll=False),
+    Param("pll_out_max",         "PLLMAX?",    parse_float, "pll", "V",    poll=False),
+    Param("pll_out_min",         "PLLMIN?",    parse_float, "pll", "V",    poll=False),
+    Param("lock_range",          "LOCKRNG?",   parse_float, "pll", "V",    poll=False),
 
     # --- AUX servo filter ---------------------------------------------------
-    # Param("aux_enabled",         "AUXEN?",     parse_bool,  "aux", "bool"),
-    # Param("aux_inverted",        "AUXINVT?",   parse_bool,  "aux", "bool"),
-    # Param("aux_target",          "AUXTGT?",    parse_float, "aux", "V"),
-    # Param("aux_gain",            "AUXGAIN?",   parse_float, "aux", "Hz"),
-    # Param("aux_bias",            "AUXBIAS?",   parse_float, "aux", "V"),
-    # Param("aux_out_max",         "AUXMAX?",    parse_float, "aux", "V"),
-    # Param("aux_out_min",         "AUXMIN?",    parse_float, "aux", "V"),
+    Param("aux_enabled",         "AUXEN?",     parse_bool,  "aux", "bool", poll=False),
+    Param("aux_inverted",        "AUXINVT?",   parse_bool,  "aux", "bool", poll=False),
+    Param("aux_target",          "AUXTGT?",    parse_float, "aux", "V",    poll=False),
+    Param("aux_gain",            "AUXGAIN?",   parse_float, "aux", "Hz",   poll=False),
+    Param("aux_bias",            "AUXBIAS?",   parse_float, "aux", "V",    poll=False),
+    Param("aux_out_max",         "AUXMAX?",    parse_float, "aux", "V",    poll=False),
+    Param("aux_out_min",         "AUXMIN?",    parse_float, "aux", "V",    poll=False),
 
     # --- sweep --------------------------------------------------------------
-    # Param("ramp_on",             "RAMP?",      parse_bool,  "sweep", "bool"),
-    # Param("ramp_channel",        "RAMPCH?",    parse_int,   "sweep", "enum"),
-    # Param("ramp_points",         "RAMPNUM?",   parse_int,   "sweep", "count"),
-    # Param("ramp_frequency",      "RAMPFRQ?",   parse_float, "sweep", "Hz"),
-    # Param("ramp_span",           "RAMPSWP?",   parse_float, "sweep", "V"),
-    # Param("ramp_adc_gain_mode",  "RAMPADC?",   parse_int,   "sweep", "enum"),
+    Param("ramp_on",             "RAMP?",      parse_bool,  "sweep", "bool",  poll=False),
+    Param("ramp_channel",        "RAMPCH?",    parse_int,   "sweep", "enum",  poll=False),
+    Param("ramp_points",         "RAMPNUM?",   parse_int,   "sweep", "count", poll=False),
+    Param("ramp_frequency",      "RAMPFRQ?",   parse_float, "sweep", "Hz",    poll=False),
+    Param("ramp_span",           "RAMPSWP?",   parse_float, "sweep", "V",     poll=False),
+    Param("ramp_adc_gain_mode",  "RAMPADC?",   parse_int,   "sweep", "enum",  poll=False),
 
     # --- beat note input ----------------------------------------------------
-    # Param("beat_note_path_max",  "BNMAX?",     parse_float, "beatnote", "MHz"),
-    # Param("n1_divider",          "N1DIV?",     parse_int,   "beatnote", "ratio"),
-    # Param("n2_divider",          "N2DIV?",     parse_int,   "beatnote", "ratio"),
+    Param("beat_note_path_max",  "BNMAX?",     parse_float, "beatnote", "MHz",   poll=False),
+    Param("n1_divider",          "N1DIV?",     parse_int,   "beatnote", "ratio", poll=False),
+    Param("n2_divider",          "N2DIV?",     parse_int,   "beatnote", "ratio", poll=False),
     Param("beat_note_divided",   "READBN?",    parse_float, "beatnote", "MHz"),
 
     # --- reference source ---------------------------------------------------
-    # Param("ref_frequency",       "READREF?",   parse_float, "reference", "MHz"),
-    # Param("ext_ref_bw_limit",    "EREFBWL?",   parse_float, "reference", "MHz"),
-    # Param("dds_is_pfd_ref",      "PFDDDS?",    parse_bool,  "reference", "bool"),
-    # Param("dds_internal_ref",    "DDSINT?",    parse_bool,  "reference", "bool"),
-    # Param("dds_ref_frequency",   "DDSREFF?",   parse_float, "reference", "MHz"),
-    # Param("m1_divider",          "M1DIV?",     parse_int,   "reference", "ratio"),
-    # Param("m2_divider",          "M2DIV?",     parse_int,   "reference", "ratio"),
+    Param("ref_frequency",       "READREF?",   parse_float, "reference", "MHz",   poll=False),
+    Param("ext_ref_bw_limit",    "EREFBWL?",   parse_float, "reference", "MHz",   poll=False),
+    Param("dds_is_pfd_ref",      "PFDDDS?",    parse_bool,  "reference", "bool",  poll=False),
+    Param("dds_internal_ref",    "DDSINT?",    parse_bool,  "reference", "bool",  poll=False),
+    Param("dds_ref_frequency",   "DDSREFF?",   parse_float, "reference", "MHz",   poll=False),
+    Param("m1_divider",          "M1DIV?",     parse_int,   "reference", "ratio", poll=False),
+    Param("m2_divider",          "M2DIV?",     parse_int,   "reference", "ratio", poll=False),
 
     # --- external I/O -------------------------------------------------------
-    # Param("monitor_mux",         "MUXO?",      parse_int,   "io", "enum"),
-    # Param("fp_out1_enabled",     "FP1EN?",     parse_bool,  "io", "bool"),
-    # Param("fp_out2_enabled",     "FP2EN?",     parse_bool,  "io", "bool"),
-    # Param("fp_out2_mux",         "FPMUXO?",    parse_int,   "io", "enum"),
-    # Param("fp_mod_in_a_enabled", "FPAINEN?",   parse_bool,  "io", "bool"),
-    # Param("fp_mod_in_b_enabled", "FPBINEN?",   parse_bool,  "io", "bool"),
-    # Param("trigger_in_mode",     "TRIGI?",     parse_int,   "io", "enum"),
-    # Param("trigger_out_mode",    "TRIGO?",     parse_int,   "io", "enum"),
+    Param("monitor_mux",         "MUXO?",      parse_int,   "io", "enum", poll=False),
+    Param("fp_out1_enabled",     "FP1EN?",     parse_bool,  "io", "bool", poll=False),
+    Param("fp_out2_enabled",     "FP2EN?",     parse_bool,  "io", "bool", poll=False),
+    Param("fp_out2_mux",         "FPMUXO?",    parse_int,   "io", "enum", poll=False),
+    Param("fp_mod_in_a_enabled", "FPAINEN?",   parse_bool,  "io", "bool", poll=False),
+    Param("fp_mod_in_b_enabled", "FPBINEN?",   parse_bool,  "io", "bool", poll=False),
+    Param("trigger_in_mode",     "TRIGI?",     parse_int,   "io", "enum", poll=False),
+    Param("trigger_out_mode",    "TRIGO?",     parse_int,   "io", "enum", poll=False),
 
     # --- advanced -----------------------------------------------------------
-    # Param("integrator_hold",     "HOLD?",      parse_bool,  "advanced", "bool"),
-    # Param("dds_frequency",       "DDSFREQ?",   parse_float, "advanced", "MHz"),
-    # Param("dds_raw",             "DDSRAW?",    parse_int,   "advanced", "counts"),
+    Param("integrator_hold",     "HOLD?",      parse_bool,  "advanced", "bool",   poll=False),
+    Param("dds_frequency",       "DDSFREQ?",   parse_float, "advanced", "MHz",    poll=False),
+    Param("dds_raw",             "DDSRAW?",    parse_int,   "advanced", "counts", poll=False),
 
-    # --- calibration (slow-moving; comment out for routine logging) ---------
-    # Param("cal_status",          "_CAL?",      parse_str,   "calibration", "status"),
-    # Param("cal_opamp_offset",    "_OPOFST?",   parse_int,   "calibration", "DAC"),
-    # Param("cal_vga_offset",      "_VGAOFT?",   parse_int,   "calibration", "DAC"),
-    # Param("cal_vga_gain_offset", "_VGAGOF?",   parse_int,   "calibration", "DAC"),
-    # Param("cal_servo_offset",    "_CALSV?",    parse_int,   "calibration", "DAC"),
-    # Param("cal_aux_offset",      "_CALAX?",    parse_int,   "calibration", "DAC"),
+    # --- calibration (slow-moving; not worth logging every cycle) -----------
+    Param("cal_status",          "_CAL?",      parse_str,   "calibration", "status", poll=False),
+    Param("cal_opamp_offset",    "_OPOFST?",   parse_int,   "calibration", "DAC",    poll=False),
+    Param("cal_vga_offset",      "_VGAOFT?",   parse_int,   "calibration", "DAC",    poll=False),
+    Param("cal_vga_gain_offset", "_VGAGOF?",   parse_int,   "calibration", "DAC",    poll=False),
+    Param("cal_servo_offset",    "_CALSV?",    parse_int,   "calibration", "DAC",    poll=False),
+    Param("cal_aux_offset",      "_CALAX?",    parse_int,   "calibration", "DAC",    poll=False),
 
     # --- UI settings (rarely useful to log) ---------------------------------
-    # Param("screen_backlight",  "#SCBKLT?",   parse_int,   "ui", "level"),
-    # Param("screen_volume",     "#SCVOL?",    parse_int,   "ui", "level"),
+    Param("screen_backlight",  "#SCBKLT?",   parse_int,   "ui", "level", poll=False),
+    Param("screen_volume",     "#SCVOL?",    parse_int,   "ui", "level", poll=False),
 )
 
 
@@ -232,19 +236,13 @@ class SliceOPL(VescentSerialDevice):
 
     Example
     -------
-        with SliceOPL("/dev/ttyUSB1") as opl:          # read-only by default
+        with SliceOPL("/dev/ttyUSB1") as opl:
             print(opl.idn())
             print(opl.error_signal(), opl.lock_range())
-
-        with SliceOPL("/dev/ttyUSB1", read_only=False) as opl:
             opl.set_pll_gain(-10.0)
     """
 
     MONITOR_PARAMS = MONITOR_PARAMS
-
-    #: READVOLT reads an ADC channel but carries no '?'. Everything else
-    #: without a '?' on this instrument changes state.
-    READ_SAFE_COMMANDS = frozenset({"READVOLT"})
 
     #: READBN? returns the *divided* beat note. Whether the reading sits after
     #: N1 alone or after N1*N2 is not stated in Rev 01 of the API guide, so no

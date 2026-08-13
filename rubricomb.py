@@ -13,8 +13,9 @@ Covers the ASCII serial API exposed on the rear-panel USB interface:
 Transport, parsing, and Influx plumbing live in vescent_serial.py.
 Run main.py to poll this instrument alongside the SLICE-OPL.
 
-Connections are READ-ONLY unless constructed with read_only=False; every
-setter below is blocked on a read-only connection.
+Every setter below sends as soon as it's called. What the HTTP API will
+write on a caller's behalf is controlled per field, via MONITOR_PARAMS
+(Param.readonly / Param.setter).
 """
 
 from __future__ import annotations
@@ -77,50 +78,60 @@ def decode_error(code: int) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Parameter table -- everything the monitoring loop polls.
-# Comment out any line you do not want logged; the rest stays here for
-# reference. All entries are queries, so the table is safe to sweep against a
-# read-only connection.
+# Parameter table -- every readable field, not just the ones actively logged.
+# poll=False keeps an entry out of the periodic monitoring sweep while
+# leaving it in this table, documented and queryable on demand.
+#
+# readonly=True (the default) blocks a field from ever being written through
+# anything that consults the flag. cav_temp is deliberately the only field
+# with readonly=False, to test write support against before opening up more.
 # ---------------------------------------------------------------------------
 
 MONITOR_PARAMS: Tuple[Param, ...] = (
     # --- system level -------------------------------------------------------
-    # Param("master_mode",        "MSTRCTL?",       parse_int,   "system", "enum"),
+    Param("master_mode",        "MSTRCTL?",       parse_int,   "system", "enum", poll=False),
     Param("pzt_hv_enabled",     "PZT_ENABLE?",    parse_bool,  "system", "bool"),
     Param("pzt_slow_servo_on",  "PZT_SLSRVEN?",   parse_bool,  "system", "bool"),
     Param("curr_slow_servo_on", "CURR_SLSRVEN?",  parse_bool,  "system", "bool"),
 
     # --- cavity -------------------------------------------------------------
-    # Param("cav_error_code",     "CAVERROR? 1",    parse_int,   "cavity", "code"),
-    # Param("cav_temp_setpoint",  "CAVTEMPSET? 0",  parse_float, "cavity", "degC"),
-    Param("cav_temp",           "CAVTEMP? 0",     parse_float, "cavity", "degC"),
-    # Param("cav_temp_error",     "CAVTERROR? 0",   parse_float, "cavity", "mK"),
-    # Param("cav_tec_current",    "CAVCURRENT? 0",  parse_float, "cavity", "A"),
-    # Param("cav_slow_servo_gain","CAVSLSRVGN? 0",  parse_float, "cavity", "dB"),
-    # Param("cav_slow_servo_offs","CAVSLSRVOS? 0",  parse_float, "cavity", "V"),
-    # Param("cav_dc_bias_voltage","CAVDCBIASV? 1",  parse_float, "cavity", "V"),
-    # Param("cav_output_voltage", "CAVOUTVOLT? 1",  parse_float, "cavity", "V"),
+    Param("cav_error_code",     "CAVERROR? 1",    parse_int,   "cavity", "code",  poll=False),
+    Param("cav_temp_setpoint",  "CAVTEMPSET? 0",  parse_float, "cavity", "degC",  poll=False),
+    # cav_temp is a measured reading (CAVTEMP?), not a settable register --
+    # there is no "set current temperature" command. Writing here instead
+    # calls set_cavity_temperature_setpoint(), the actual settable quantity
+    # that drives cav_temp toward a new value via the cavity's own PID loop.
+    # cav_temp's readback afterwards reflects the (slow) physical response,
+    # not the setpoint itself -- that's expected, not a bug in the write path.
+    Param("cav_temp",           "CAVTEMP? 0",     parse_float, "cavity", "degC",  readonly=False,
+          setter=lambda dev, v: dev.set_cavity_temperature_setpoint(v, channel=0)),
+    Param("cav_temp_error",     "CAVTERROR? 0",   parse_float, "cavity", "mK",    poll=False),
+    Param("cav_tec_current",    "CAVCURRENT? 0",  parse_float, "cavity", "A",     poll=False),
+    Param("cav_slow_servo_gain","CAVSLSRVGN? 0",  parse_float, "cavity", "dB",    poll=False),
+    Param("cav_slow_servo_offs","CAVSLSRVOS? 0",  parse_float, "cavity", "V",     poll=False),
+    Param("cav_dc_bias_voltage","CAVDCBIASV? 1",  parse_float, "cavity", "V",     poll=False),
+    Param("cav_output_voltage", "CAVOUTVOLT? 1",  parse_float, "cavity", "V",     poll=False),
 
     # --- oscillator laser ---------------------------------------------------
-    # Param("osc_error_code",     "OSCERROR? 1",    parse_int,   "oscillator", "code"),
-    # Param("osc_temp",           "OSCTEMP? 0",     parse_float, "oscillator", "degC"),
-    # Param("osc_temp_error",     "OSCTERROR? 0",   parse_float, "oscillator", "degC"),
-    # Param("osc_tec_current",    "OSCTCURR? 0",    parse_float, "oscillator", "A"),
-    # Param("osc_mod_current",    "OSCMODCURR?",    parse_float, "oscillator", "mA"),
-    # Param("osc_current_setpt",  "OSCCCURSET? 1",  parse_float, "oscillator", "A"),
+    Param("osc_error_code",     "OSCERROR? 1",    parse_int,   "oscillator", "code", poll=False),
+    Param("osc_temp",           "OSCTEMP? 0",     parse_float, "oscillator", "degC", poll=False),
+    Param("osc_temp_error",     "OSCTERROR? 0",   parse_float, "oscillator", "degC", poll=False),
+    Param("osc_tec_current",    "OSCTCURR? 0",    parse_float, "oscillator", "A",    poll=False),
+    Param("osc_mod_current",    "OSCMODCURR?",    parse_float, "oscillator", "mA",   poll=False),
+    Param("osc_current_setpt",  "OSCCCURSET? 1",  parse_float, "oscillator", "A",    poll=False),
     Param("osc_output_current", "OSCCCURR? 1",    parse_float, "oscillator", "mA"),
-    # Param("osc_compliance_volt","OSCCVOLTCC? 1",  parse_float, "oscillator", "V"),
-    # Param("osc_interlock_ok",   "OSCINTERLK?",    parse_bool,  "oscillator", "bool"),
+    Param("osc_compliance_volt","OSCCVOLTCC? 1",  parse_float, "oscillator", "V",    poll=False),
+    Param("osc_interlock_ok",   "OSCINTERLK?",    parse_bool,  "oscillator", "bool", poll=False),
 
     # --- amplifier laser ----------------------------------------------------
-    # Param("amp_error_code",     "AMPERROR? 1",    parse_int,   "amplifier", "code"),
-    # Param("amp_temp",           "AMPTEMP? 0",     parse_float, "amplifier", "degC"),
-    # Param("amp_temp_error",     "AMPTERROR? 0",   parse_float, "amplifier", "degC"),
-    # Param("amp_tec_current",    "AMPTCURR? 0",    parse_float, "amplifier", "A"),
-    # Param("amp_current_setpt",  "AMPCCURSET? 1",  parse_float, "amplifier", "A"),
-    # Param("amp_output_current", "AMPCCURR? 1",    parse_float, "amplifier", "mA"),
-    # Param("amp_compliance_volt","AMPCVOLTCC? 1",  parse_float, "amplifier", "V"),
-    # Param("amp_interlock_ok",   "AMPINTERLK?",    parse_bool,  "amplifier", "bool"),
+    Param("amp_error_code",     "AMPERROR? 1",    parse_int,   "amplifier", "code", poll=False),
+    Param("amp_temp",           "AMPTEMP? 0",     parse_float, "amplifier", "degC", poll=False),
+    Param("amp_temp_error",     "AMPTERROR? 0",   parse_float, "amplifier", "degC", poll=False),
+    Param("amp_tec_current",    "AMPTCURR? 0",    parse_float, "amplifier", "A",    poll=False),
+    Param("amp_current_setpt",  "AMPCCURSET? 1",  parse_float, "amplifier", "A",    poll=False),
+    Param("amp_output_current", "AMPCCURR? 1",    parse_float, "amplifier", "mA",   poll=False),
+    Param("amp_compliance_volt","AMPCVOLTCC? 1",  parse_float, "amplifier", "V",    poll=False),
+    Param("amp_interlock_ok",   "AMPINTERLK?",    parse_bool,  "amplifier", "bool", poll=False),
 )
 
 
@@ -133,18 +144,13 @@ class RubriComb(VescentSerialDevice):
 
     Example
     -------
-        with RubriComb("/dev/ttyUSB0") as comb:        # read-only by default
+        with RubriComb("/dev/ttyUSB0") as comb:
             print(comb.idn())
             print(comb.cavity_temperature())
-
-        with RubriComb("/dev/ttyUSB0", read_only=False) as comb:
             comb.set_cavity_temperature_setpoint(24.0)
     """
 
     MONITOR_PARAMS = MONITOR_PARAMS
-
-    #: Every RUBRIComb read command ends in '?', so nothing extra is read-safe.
-    READ_SAFE_COMMANDS = frozenset()
 
     # -- system info ---------------------------------------------------------
 
@@ -402,11 +408,10 @@ class RubriComb(VescentSerialDevice):
     def startup(self, tolerance_mk: float = 20.0, timeout: float = 600.0) -> MasterMode:
         """Bring the comb up: OFF -> STANDBY -> (temperatures stable) -> LASER ON.
 
-        CHANGES DEVICE STATE. Requires read_only=False. The API guide is
-        explicit that these system-level commands should be preferred, since
-        they sequence the TECs ahead of the current supplies.
+        CHANGES DEVICE STATE. The API guide is explicit that these
+        system-level commands should be preferred, since they sequence the
+        TECs ahead of the current supplies.
         """
-        self._require_writable("startup()")
         mode = self.master_mode()
         if mode == MasterMode.LASER_ON:
             return mode
@@ -423,5 +428,4 @@ class RubriComb(VescentSerialDevice):
 
     def shutdown(self) -> MasterMode:
         """Return the comb to OFF. CHANGES DEVICE STATE."""
-        self._require_writable("shutdown()")
         return self.set_master_mode(MasterMode.OFF)

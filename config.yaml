@@ -30,6 +30,17 @@ influx:
 polling:
   interval: 10.0       # seconds between sweeps (ignored with --once)
 
+# -- HTTP API (on-demand reads/writes; see api.py) ---------------------------
+# Only runs in continuous mode (not --once). GET triggers an immediate
+# hardware read: http://127.0.0.1:1993/rubricomb/cav_temp
+# Writes (GET .../field/value) work for any field marked writable in its
+# driver's MONITOR_PARAMS -- right now that's only rubricomb/cav_temp (via
+# CAVTEMPSET; see rubricomb.py).
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 1993
+
 # -- RUBRIComb (single instrument) -------------------------------------------
 # Comment out this whole section if you don't have a RUBRIComb connected.
 rubricomb:

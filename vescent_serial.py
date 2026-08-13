@@ -12,12 +12,9 @@ so the transport, echo handling, response parsing, parameter-table sweep, and
 Influx sinks live here. Instrument-specific command sets live in rubricomb.py
 and slice_opl.py.
 
-READ-ONLY BY DEFAULT
---------------------
-VescentSerialDevice refuses to transmit any command that is not a pure query
-unless it is constructed with read_only=False. The check is an allowlist, not a
-guess at punctuation: SLICE-OPL's READVOLT is a read with no '?', while NOCP,
-DDSAUTO and _FACTORY change state with no '?' either.
+Driver methods (set_pll_gain(), reset(), etc.) send as soon as they're
+called. What api.py will write on a caller's behalf is controlled per field,
+via the Param table below (Param.readonly / Param.setter).
 """
 
 from __future__ import annotations
@@ -52,10 +49,6 @@ class NoResponseError(VescentError):
 
 class ResponseParseError(VescentError):
     """The instrument replied with something we could not interpret."""
-
-
-class ReadOnlyError(VescentError):
-    """A state-changing command was attempted on a read-only connection."""
 
 
 # ---------------------------------------------------------------------------
@@ -131,12 +124,31 @@ class Param:
     parser   : callable turning the reply text into a Python value
     group    : subsystem tag, for readability when scanning the table
     unit     : physical unit, documentation only
+    poll     : included in the periodic monitor()/read_all() sweep that gets
+               logged to Influx. False keeps the entry documented and
+               queryable on demand without logging it every cycle.
+    readonly : blocks this field from ever being written through anything
+               that consults the flag (the HTTP API). True by default; only
+               fields deliberately opened up for writing should set this
+               False.
+    setter   : (device, value) -> Any, called by the API to actually perform
+               a write for this field -- always an existing, already-tested
+               driver method (e.g. dev.set_cavity_temperature_setpoint),
+               never a raw command string built from user input. *value* has
+               already been run through `parser` by the time the setter sees
+               it, so the setter receives the same type parser() would
+               return from a query reply. None (the default) means "no write
+               path wired up yet" -- readonly=False with setter=None is
+               refused, not treated as silently writable.
     """
     key: str
     command: str
     parser: Callable[[str], Any]
     group: str = ""
     unit: str = ""
+    poll: bool = True
+    readonly: bool = True
+    setter: Optional[Callable[[Any, Any], Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -146,18 +158,13 @@ class Param:
 class VescentSerialDevice:
     """Common serial layer for Vescent ASCII-API instruments.
 
-    Subclasses set MONITOR_PARAMS (and optionally READ_SAFE_COMMANDS and
-    derived_fields()).
+    Subclasses set MONITOR_PARAMS (and optionally derived_fields()).
     """
 
     TERMINATOR = b"\r"
 
     #: Parameter table swept by read_all(); overridden per instrument.
     MONITOR_PARAMS: Tuple[Param, ...] = ()
-
-    #: Commands that read state but do not end in '?'. Anything not ending in
-    #: '?' and not listed here is treated as state-changing.
-    READ_SAFE_COMMANDS: frozenset = frozenset()
 
     def __init__(
         self,
@@ -166,7 +173,6 @@ class VescentSerialDevice:
         timeout: float = 2.0,
         write_timeout: float = 2.0,
         inter_command_delay: float = 0.02,
-        read_only: bool = True,
         assert_dtr: bool = False,
         transport: Any = None,
         open_on_init: bool = True,
@@ -176,7 +182,6 @@ class VescentSerialDevice:
         self.timeout = timeout
         self.write_timeout = write_timeout
         self.inter_command_delay = inter_command_delay
-        self.read_only = read_only
         self.assert_dtr = assert_dtr
         self._ser = transport
         self._lock = threading.RLock()
@@ -197,8 +202,7 @@ class VescentSerialDevice:
                 return
             if serial is None:
                 raise VescentError("pyserial is not installed -- run `pip install pyserial`")
-            log.info("Opening %s at %d baud (read_only=%s)", self.port, self.baudrate,
-                     self.read_only)
+            log.info("Opening %s at %d baud", self.port, self.baudrate)
             ser = serial.Serial()
             ser.port = self.port
             ser.baudrate = self.baudrate
@@ -242,44 +246,6 @@ class VescentSerialDevice:
     def is_open(self) -> bool:
         return self._ser is not None and bool(getattr(self._ser, "is_open", False))
 
-    # -- read-only enforcement ----------------------------------------------
-
-    @classmethod
-    def is_query(cls, command: str) -> bool:
-        """True if *command* only reads state.
-
-        A command is a read if its command token ends in '?' or is listed in
-        READ_SAFE_COMMANDS. Note that '?' alone is not a reliable test in
-        either direction on these instruments.
-        """
-        tokens = command.strip().split()
-        if not tokens:
-            return False
-        name = tokens[0].upper()
-        return name.endswith("?") or name in cls.READ_SAFE_COMMANDS
-
-    def _require_writable(self, action: str) -> None:
-        """Fail fast at the top of a state-changing sequence.
-
-        Sequences that begin by reading (startup(), for example) could
-        otherwise return early on a read-only connection and look as though
-        they succeeded.
-        """
-        if self.read_only:
-            raise ReadOnlyError(
-                f"refusing to run {action}: this connection is read-only. "
-                f"Construct {type(self).__name__}(..., read_only=False) to "
-                f"allow state changes."
-            )
-
-    def _check_read_only(self, command: str) -> None:
-        if self.read_only and not self.is_query(command):
-            raise ReadOnlyError(
-                f"refusing to send {command.strip()!r}: this connection is "
-                f"read-only. Construct {type(self).__name__}(..., read_only=False) "
-                f"to allow state changes."
-            )
-
     # -- low-level transport -------------------------------------------------
 
     def _read_line(self) -> str:
@@ -306,7 +272,6 @@ class VescentSerialDevice:
         Some commands are documented to return only an echo of what was sent;
         pass allow_echo_reply=True so that echo counts as the reply.
         """
-        self._check_read_only(command)
         if not self.is_open:
             # Most commonly the port got closed out from under us by a
             # reconnect that hasn't caught up yet (or never ran). Try to
@@ -348,10 +313,7 @@ class VescentSerialDevice:
         return parser(self._transact(command))
 
     def write(self, command: str, expect_reply: bool = True) -> str:
-        """Send a command; most setters echo back the resulting value.
-
-        Blocked unless the device was constructed with read_only=False.
-        """
+        """Send a command; most setters echo back the resulting value."""
         return self._transact(command, expect_reply=expect_reply,
                               allow_echo_reply=True)
 
@@ -362,7 +324,7 @@ class VescentSerialDevice:
         return self.query("*IDN?")
 
     def reset(self) -> str:
-        """Reboot the device. Blocked on a read-only connection."""
+        """Reboot the device."""
         return self._transact("*RST", max_lines=2, allow_echo_reply=True)
 
     # -- sweep ---------------------------------------------------------------
@@ -378,6 +340,11 @@ class VescentSerialDevice:
     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
         """Poll every parameter once.
 
+        With no explicit *params*, sweeps only the poll=True entries of
+        MONITOR_PARAMS -- poll=False entries stay in the table (documented,
+        queryable on demand) without being logged every cycle. Pass an
+        explicit *params* to bypass that filter, e.g. to read the full table.
+
         Returns ``(values, failures)`` where *failures* maps field name to the
         error text. A single bad *reply* (timeout, garbled line) never aborts
         the sweep -- partial data beats no data when you are trying to see
@@ -387,7 +354,8 @@ class VescentSerialDevice:
         the whole sweep failed so it can reconnect -- so it propagates
         instead of being folded into *failures*.
         """
-        params = self.MONITOR_PARAMS if params is None else params
+        if params is None:
+            params = tuple(p for p in self.MONITOR_PARAMS if p.poll)
         values: Dict[str, Any] = {}
         failures: Dict[str, str] = {}
         for p in params:

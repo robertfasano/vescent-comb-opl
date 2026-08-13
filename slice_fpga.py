@@ -22,13 +22,13 @@ import argparse
 import logging
 import socket
 import sys
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from vescent_serial import (
     NoResponseError,
     Param,
-    ReadOnlyError,
     VescentError,
     parse_float,
     parse_str,
@@ -123,17 +123,10 @@ class SliceFPGA:
         inter_command_delay: float = 0.02,
         terminator: bytes = TERMINATOR,
         negotiate_telnet: bool = True,
-        read_only: bool = False,
         open_on_init: bool = True,
         transport: Any = None,
     ) -> None:
         """
-        read_only: unlike the serial drivers this defaults to False, because
-            the SLICE-FPGA command set is undocumented -- there is no reliable
-            way to tell a query from a setter, so a guard here would give false
-            confidence rather than real protection. Pass read_only=True to
-            restrict the connection to commands ending in '?', which is a
-            heuristic, not a guarantee.
         negotiate_telnet: strip and answer IAC sequences. Harmless against a
             raw socket server (which never sends them); set False only if the
             payload itself can contain 0xFF bytes.
@@ -145,10 +138,12 @@ class SliceFPGA:
         self.inter_command_delay = inter_command_delay
         self.terminator = terminator
         self.negotiate_telnet = negotiate_telnet
-        self.read_only = read_only
         self._sock: Optional[socket.socket] = transport
         self._buf = bytearray()      # decoded payload awaiting a line break
         self._iac_state: List[int] = []
+        # An API request and a periodic sweep can land on the same socket at
+        # once; this serializes them the same way VescentSerialDevice does.
+        self._lock = threading.RLock()
         if transport is None and open_on_init:
             self.open()
 
@@ -163,38 +158,40 @@ class SliceFPGA:
         return self._sock is not None
 
     def open(self) -> None:
-        if self._sock is not None:
-            return
-        log.info("Connecting to %s (read_only=%s)", self.address, self.read_only)
-        try:
-            sock = socket.create_connection((self.host, self.port),
-                                            timeout=self.connect_timeout)
-        except OSError as exc:
-            raise VescentError(
-                f"could not connect to {self.address}: {exc}. Is the SLICE-FPGA "
-                f"software running and its IPC bridge listening?"
-            ) from exc
-        sock.settimeout(self.timeout)
-        # Commands are tiny; Nagle would add up to 40 ms of latency per exchange.
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self._sock = sock
-        self._buf.clear()
-        self._iac_state.clear()
-        # Passive negotiation: send nothing, and drain any banner or option
-        # negotiation the server opens with.
-        self.drain(settle=0.2)
+        with self._lock:
+            if self._sock is not None:
+                return
+            log.info("Connecting to %s", self.address)
+            try:
+                sock = socket.create_connection((self.host, self.port),
+                                                timeout=self.connect_timeout)
+            except OSError as exc:
+                raise VescentError(
+                    f"could not connect to {self.address}: {exc}. Is the SLICE-FPGA "
+                    f"software running and its IPC bridge listening?"
+                ) from exc
+            sock.settimeout(self.timeout)
+            # Commands are tiny; Nagle would add up to 40 ms of latency per exchange.
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._sock = sock
+            self._buf.clear()
+            self._iac_state.clear()
+            # Passive negotiation: send nothing, and drain any banner or option
+            # negotiation the server opens with.
+            self.drain(settle=0.2)
 
     def close(self) -> None:
-        if self._sock is not None:
-            try:
-                self._sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                self._sock.close()
-            except OSError:  # pragma: no cover
-                pass
-            self._sock = None
+        with self._lock:
+            if self._sock is not None:
+                try:
+                    self._sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    self._sock.close()
+                except OSError:  # pragma: no cover
+                    pass
+                self._sock = None
 
     def reconnect(self) -> None:
         self.close()
@@ -325,54 +322,39 @@ class SliceFPGA:
             log.debug("Drained: %s", lines)
         return lines
 
-    # -- read-only guard (heuristic; see __init__) ---------------------------
-
-    @staticmethod
-    def is_query(command: str) -> bool:
-        tokens = command.strip().split()
-        return bool(tokens) and tokens[0].endswith("?")
-
-    def _check_read_only(self, command: str) -> None:
-        if self.read_only and not self.is_query(command):
-            raise ReadOnlyError(
-                f"refusing to send {command.strip()!r}: this connection is "
-                f"read-only, which here means '?'-terminated commands only. "
-                f"Construct SliceFPGA(read_only=False) to send anything else."
-            )
-
     # -- transactions --------------------------------------------------------
 
     def _transact(self, command: str, expect_reply: bool = True,
                   max_lines: int = 4, allow_echo_reply: bool = False) -> str:
         """Send one command and return the first non-echo reply line."""
-        self._check_read_only(command)
-        if self._sock is None:
-            raise ConnectionLostError("not connected")
-        payload = command.strip().encode("ascii") + self.terminator
-        log.debug("TX: %s", command.strip())
-        self._buf.clear()          # discard anything stale before asking
-        try:
-            self._sock.sendall(payload)
-        except OSError as exc:
-            raise ConnectionLostError(f"send to {self.address} failed: {exc}") from exc
-        if not expect_reply:
-            time.sleep(self.inter_command_delay)
-            return ""
-        last_echo: Optional[str] = None
-        for _ in range(max_lines):
-            raw = self._read_line()
-            if not raw:
-                break
-            log.debug("RX: %s", raw)
-            stripped = strip_echo(raw, command)
-            if stripped is not None:
+        with self._lock:
+            if self._sock is None:
+                raise ConnectionLostError("not connected")
+            payload = command.strip().encode("ascii") + self.terminator
+            log.debug("TX: %s", command.strip())
+            self._buf.clear()          # discard anything stale before asking
+            try:
+                self._sock.sendall(payload)
+            except OSError as exc:
+                raise ConnectionLostError(f"send to {self.address} failed: {exc}") from exc
+            if not expect_reply:
                 time.sleep(self.inter_command_delay)
-                return stripped
-            last_echo = raw
-        time.sleep(self.inter_command_delay)
-        if allow_echo_reply and last_echo is not None:
-            return last_echo
-        raise NoResponseError(f"no reply to {command!r} from {self.address}")
+                return ""
+            last_echo: Optional[str] = None
+            for _ in range(max_lines):
+                raw = self._read_line()
+                if not raw:
+                    break
+                log.debug("RX: %s", raw)
+                stripped = strip_echo(raw, command)
+                if stripped is not None:
+                    time.sleep(self.inter_command_delay)
+                    return stripped
+                last_echo = raw
+            time.sleep(self.inter_command_delay)
+            if allow_echo_reply and last_echo is not None:
+                return last_echo
+            raise NoResponseError(f"no reply to {command!r} from {self.address}")
 
     def query(self, command: str,
               parser: Callable[[str], Any] = parse_str) -> Any:
@@ -400,7 +382,6 @@ class SliceFPGA:
         single-line query() would return only the first line. Useful while
         mapping out the API.
         """
-        self._check_read_only(command)
         if self._sock is None:
             raise ConnectionLostError("not connected")
         self._buf.clear()
@@ -414,25 +395,6 @@ class SliceFPGA:
                     lines.append(line)
                 deadline = time.monotonic() + settle
         return lines
-
-    def probe(self, candidates: Sequence[str],
-              settle: float = 0.2) -> Dict[str, Optional[str]]:
-        """Try a list of candidate commands and report what answered.
-
-        Maps out an undocumented API without guessing at side effects: it sends
-        exactly what you give it, so keep the list to queries. Returns command
-        -> reply, or None where nothing came back.
-        """
-        results: Dict[str, Optional[str]] = {}
-        for cmd in candidates:
-            try:
-                results[cmd] = self._transact(cmd, max_lines=2)
-            except NoResponseError:
-                results[cmd] = None
-            except VescentError as exc:
-                results[cmd] = f"<{type(exc).__name__}: {exc}>"
-            self.drain(settle=settle)
-        return results
 
     # -- monitoring integration ---------------------------------------------
 
@@ -454,6 +416,9 @@ class SliceFPGA:
     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
         """Poll every parameter in the table once.
 
+        With no explicit *params*, sweeps only the poll=True entries of
+        MONITOR_PARAMS -- same convention as the serial drivers' read_all().
+
         A single bad *reply* (timeout, garbled line) is recorded as a failure,
         not an aborted sweep -- same policy as the serial drivers. A
         ConnectionLostError is different: the socket itself is gone, every
@@ -461,7 +426,8 @@ class SliceFPGA:
         being folded into *failures* -- that's what lets the monitor loop's
         reconnect logic take over instead of this looping forever.
         """
-        params = self.MONITOR_PARAMS if params is None else params
+        if params is None:
+            params = tuple(p for p in self.MONITOR_PARAMS if p.poll)
         values: Dict[str, Any] = {}
         failures: Dict[str, str] = {}
         for p in params:
@@ -526,8 +492,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--command", "-c", help="send one command and exit")
     p.add_argument("--lines", action="store_true",
                    help="with --command, collect a multi-line reply")
-    p.add_argument("--read-only", action="store_true",
-                   help="only allow commands ending in '?' (heuristic)")
     p.add_argument("--no-telnet", action="store_true",
                    help="disable IAC handling (treat as a raw socket)")
     p.add_argument("-v", "--verbose", action="count", default=0)
@@ -543,7 +507,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     try:
         fpga = SliceFPGA(args.host, args.port, timeout=args.timeout,
-                         read_only=args.read_only,
                          negotiate_telnet=not args.no_telnet)
     except VescentError as exc:
         print(exc, file=sys.stderr)

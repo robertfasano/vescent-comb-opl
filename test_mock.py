@@ -1,8 +1,7 @@
 """Smoke test for the Vescent drivers against simulated instruments."""
 import os, tempfile, threading, time
-from vescent_serial import (MonitoredDevice, ConsoleSink, ReadOnlyError,
-                            monitor, sweep_once)
-from rubricomb import RubriComb, MasterMode, decode_error
+from vescent_serial import (MonitoredDevice, ConsoleSink, monitor, sweep_once)
+from rubricomb import RubriComb
 import rubricomb, slice_opl
 from slice_opl import SliceOPL, ADCChannel
 
@@ -111,47 +110,17 @@ for echo in (True, False):
     assert vals["lock_ok"] is True
     assert vals["cal_status"] == "Pass"
 
-# --- read-only enforcement -------------------------------------------------
-print("\n=== read-only guard ===")
+assert opl.read_voltage(ADCChannel.PLL_OUTPUT) == 2.501
+
+# --- setters send on the first call -----------------------------------
+print("\n=== setters ===")
 comb = make(RubriComb, COMB_REPLIES)
 opl = make(SliceOPL, OPL_REPLIES)
-blocked = 0
-for calls in (
-    [lambda: comb.set_master_mode(MasterMode.LASER_ON),
-     lambda: comb.set_cavity_temperature_setpoint(24.0),
-     lambda: comb.save_settings(),
-     lambda: comb.reset(),
-     lambda: comb.startup(),
-     lambda: comb.shutdown(),
-     lambda: comb.clear_oscillator_error(49408)],
-    [lambda: opl.set_servo_enabled(False),
-     lambda: opl.set_pll_gain(-10.0),
-     lambda: opl.disable_charge_pump(),       # NOCP, no '?'
-     lambda: opl.dds_auto_configure(),        # DDSAUTO, no '?'
-     lambda: opl.start_self_calibration(),    # _SELFCAL 1
-     lambda: opl.set_dds_raw(1234),
-     lambda: opl.reset()],
-):
-    for call in calls:
-        try:
-            call()
-        except ReadOnlyError:
-            blocked += 1
-        else:
-            raise AssertionError(f"NOT BLOCKED: {call}")
-print(f"{blocked} state-changing calls blocked")
-assert comb._ser.sent == [], comb._ser.sent
-assert opl._ser.sent == [], opl._ser.sent
-print("no bytes transmitted for blocked commands")
-
-assert opl.read_voltage(ADCChannel.PLL_OUTPUT) == 2.501
-assert SliceOPL.is_query("READVOLT 4") and not SliceOPL.is_query("NOCP")
-assert not SliceOPL.is_query("DDSAUTO") and not SliceOPL.is_query("_FACTORY 1")
-assert not RubriComb.is_query("MSTRCTL 2") and RubriComb.is_query("MSTRCTL?")
-print("READVOLT allowed; NOCP / DDSAUTO / _FACTORY blocked")
-
-w = make(SliceOPL, OPL_REPLIES, read_only=False)
-print("writable set_servo_enabled ->", w.set_servo_enabled(False))
+assert comb.set_cavity_temperature_setpoint(24.0) == 24.0
+assert comb.save_settings() == "#SAVESETTINGS"
+assert opl.set_servo_enabled(False) is False
+assert opl.set_pll_gain(-10.0) == "-10.0"
+print("RubriComb/SliceOPL setters send correctly")
 
 # --- monitor loop over both devices ---------------------------------------
 print("\n=== monitor loop ===")
