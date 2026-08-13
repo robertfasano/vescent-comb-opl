@@ -139,14 +139,14 @@ def _nearest(value: float, choices: Sequence[float]) -> float:
 MONITOR_PARAMS: Tuple[Param, ...] = (
     # --- general operation --------------------------------------------------
     # Param("servo_on",            "SERVO?",     parse_bool,  "general", "bool"),
-    # Param("beat_note_target",    "BNTGT?",     parse_float, "general", "MHz"),
+    Param("beat_note_target",    "BNTGT?",     parse_float, "general", "MHz"),
 
     # --- ADC monitors (READVOLT; the fast-moving diagnostics) ---------------
     # Param("adc_error_signal",    "READVOLT 1", parse_float, "adc", "V"),
-    # Param("adc_error_signal_8x", "READVOLT 2", parse_float, "adc", "V"),
+    Param("adc_error_signal_8x", "READVOLT 2", parse_float, "adc", "V"),
     # Param("adc_integrator_mon",  "READVOLT 3", parse_float, "adc", "V"),
-    # Param("adc_pll_output",      "READVOLT 4", parse_float, "adc", "V"),
-    # Param("adc_aux_output",      "READVOLT 5", parse_float, "adc", "V"),
+    Param("adc_pll_output",      "READVOLT 4", parse_float, "adc", "V"),
+    Param("adc_aux_output",      "READVOLT 5", parse_float, "adc", "V"),
     # Param("adc_vga_input",       "READVOLT 6", parse_float, "adc", "V"),
     # Param("adc_vga_output_mon",  "READVOLT 7", parse_float, "adc", "V"),
     # Param("adc_ground",          "READVOLT 8", parse_float, "adc", "V"),
