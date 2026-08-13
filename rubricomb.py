@@ -83,8 +83,9 @@ def decode_error(code: int) -> List[str]:
 # leaving it in this table, documented and queryable on demand.
 #
 # readonly=True (the default) blocks a field from ever being written through
-# anything that consults the flag. cav_temp is deliberately the only field
-# with readonly=False, to test write support against before opening up more.
+# anything that consults the flag. cav_temp_setpoint is deliberately the only
+# field with readonly=False, to test write support against before opening up
+# more.
 # ---------------------------------------------------------------------------
 
 MONITOR_PARAMS: Tuple[Param, ...] = (
@@ -96,15 +97,10 @@ MONITOR_PARAMS: Tuple[Param, ...] = (
 
     # --- cavity -------------------------------------------------------------
     Param("cav_error_code",     "CAVERROR? 1",    parse_int,   "cavity", "code",  poll=False),
-    Param("cav_temp_setpoint",  "CAVTEMPSET? 0",  parse_float, "cavity", "degC",  poll=False),
-    # cav_temp is a measured reading (CAVTEMP?), not a settable register --
-    # there is no "set current temperature" command. Writing here instead
-    # calls set_cavity_temperature_setpoint(), the actual settable quantity
-    # that drives cav_temp toward a new value via the cavity's own PID loop.
-    # cav_temp's readback afterwards reflects the (slow) physical response,
-    # not the setpoint itself -- that's expected, not a bug in the write path.
-    Param("cav_temp",           "CAVTEMP? 0",     parse_float, "cavity", "degC",  readonly=False,
+    Param("cav_temp_setpoint",  "CAVTEMPSET? 0",  parse_float, "cavity", "degC",  poll=False,
+          readonly=False,
           setter=lambda dev, v: dev.set_cavity_temperature_setpoint(v, channel=0)),
+    Param("cav_temp",           "CAVTEMP? 0",     parse_float, "cavity", "degC"),
     Param("cav_temp_error",     "CAVTERROR? 0",   parse_float, "cavity", "mK",    poll=False),
     Param("cav_tec_current",    "CAVCURRENT? 0",  parse_float, "cavity", "A",     poll=False),
     Param("cav_slow_servo_gain","CAVSLSRVGN? 0",  parse_float, "cavity", "dB",    poll=False),

@@ -155,12 +155,12 @@ curl http://localhost:1993/opl-reprate/beat_note_divided
 ```
 
 Or just type the URL into a browser's address bar -- that's the point of the
-GET-with-a-trailing-value write form (`.../cav_temp/24.5`) too: no client, no
-form, no JS, just a link.
+GET-with-a-trailing-value write form (`.../cav_temp_setpoint/24.5`) too: no
+client, no form, no JS, just a link.
 
 **A field is writable only if its `Param` has `readonly=False` *and* a
 `setter` wired up** -- today that's exactly one field, `rubricomb.py`'s
-`cav_temp`, wired to `set_cavity_temperature_setpoint()` (see
+`cav_temp_setpoint`, wired to `set_cavity_temperature_setpoint()` (see
 [What's writable](#whats-writable)). If a field passes that check, the
 write goes straight to the instrument. Most `MONITOR_PARAMS` entries are
 physical measurements (temperatures, SNR, ADC voltages, beat note
@@ -168,11 +168,9 @@ readings, ...) with no corresponding hardware *setter* at all, so they
 405 rather than doing something undefined.
 
 Response codes: `200` on success (write responses include the freshly
-re-read value, which for something like `cav_temp` won't jump to match the
-new setpoint instantly -- it's a measured temperature responding to a PID
-loop, not the setpoint echoed back), `404` for an unknown measurement or
-field, `405` for a field that isn't writable, `400` for a value that doesn't
-parse, `502` if the hardware itself errors or times out.
+re-read value), `404` for an unknown measurement or field, `405` for a
+field that isn't writable, `400` for a value that doesn't parse, `502` if
+the hardware itself errors or times out.
 
 ## What's writable
 
@@ -185,7 +183,7 @@ build as soon as they're called -- `comb.set_master_mode(...)`,
   `readonly=False`.
 * **The HTTP API** checks `Param.readonly`/`Param.setter` per field (see
   [HTTP API](#http-api)) before calling a setter: `readonly=True` (every
-  field except `cav_temp`) or no `setter` wired up both 405.
+  field except `cav_temp_setpoint`) or no `setter` wired up both 405.
 
 Two SLICE-OPL API quirks worth knowing if you're calling driver methods
 directly, since the `?` suffix isn't a reliable read/write signal on that
@@ -209,8 +207,9 @@ independent flags:
   the HTTP API on demand, without it showing up in `monitor()`'s Influx
   writes every cycle. Toggle it to change what gets logged.
 * `readonly` -- whether the HTTP API will ever write to this field. `True` for
-  everything except `rubricomb.py`'s `cav_temp`, the one field currently wired
-  up to test write support against (see [What's writable](#whats-writable)).
+  everything except `rubricomb.py`'s `cav_temp_setpoint`, the one field
+  currently wired up to test write support against (see
+  [What's writable](#whats-writable)).
 
 `read_all()` sweeps `poll=True` entries by default (pass an explicit `params=`
 to bypass that, e.g. for a one-off full read) and returns `(values, failures)`

@@ -19,12 +19,12 @@ In continuous mode, an on-demand HTTP API can run alongside the periodic
 Influx sweep (config.yaml's `api:` section; off by --once). GET requests
 trigger an immediate hardware read/write, not a cached value:
 
-    GET /rubricomb/cav_temp            -> read cav_temp right now
-    GET /rubricomb/cav_temp/24.5       -> write 24.5, then re-read it
+    GET /rubricomb/cav_temp                     -> read cav_temp right now
+    GET /rubricomb/cav_temp_setpoint/24.5       -> write 24.5, then re-read it
 
 A field only accepts writes if its driver's MONITOR_PARAMS entry has
 readonly=False *and* a setter wired up -- right now, only rubricomb.py's
-cav_temp. Everything else 405s.
+cav_temp_setpoint. Everything else 405s.
 
 Usage
 -----

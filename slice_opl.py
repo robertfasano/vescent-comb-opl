@@ -136,8 +136,8 @@ def _nearest(value: float, choices: Sequence[float]) -> float:
 #
 # readonly=True (the default) blocks a field from ever being written through
 # anything that consults the flag. Nothing here has readonly=False yet --
-# rubricomb.py's cav_temp is deliberately the only field open for writing
-# right now, to test write support against before opening up more.
+# rubricomb.py's cav_temp_setpoint is deliberately the only field open for
+# writing right now, to test write support against before opening up more.
 # ---------------------------------------------------------------------------
 
 MONITOR_PARAMS: Tuple[Param, ...] = (

@@ -21,8 +21,8 @@ A field only accepts writes if both hold:
   2. that Param has a setter wired up (an existing, already-tested driver
      method -- never a raw command string built from the URL).
 
-Right now only rubricomb.py's cav_temp has readonly=False plus a setter;
-everything else 405s.
+Right now only rubricomb.py's cav_temp_setpoint has readonly=False plus a
+setter; everything else 405s.
 """
 
 from __future__ import annotations
