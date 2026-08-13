@@ -101,6 +101,23 @@ def parse_str(text: str) -> str:
     return text.strip()
 
 
+def strip_echo(line: str, sent: str) -> Optional[str]:
+    """Remove command echo from a reply line. Returns None if the line was
+    nothing but echo.
+
+    Handles the three reply shapes these instruments use: bare value
+    ("24.21"), echo-plus-value ("MSTRCTL? 0", "#SCBKLT? 5"), and pure echo.
+    Shared with the Telnet driver, whose IPC bridge echoes the same way.
+    """
+    line_s, sent_s = line.strip(), sent.strip()
+    if line_s.upper() == sent_s.upper():
+        return None
+    if line_s.upper().startswith(sent_s.upper()):
+        remainder = line_s[len(sent_s):].strip()
+        return remainder or None
+    return line_s
+
+
 # ---------------------------------------------------------------------------
 # Parameter table entry
 # ---------------------------------------------------------------------------
@@ -280,20 +297,7 @@ class VescentSerialDevice:
             buf += chunk
         return buf.decode("ascii", errors="replace").strip()
 
-    @staticmethod
-    def _strip_echo(line: str, sent: str) -> Optional[str]:
-        """Remove command echo. Returns None if the line was pure echo.
-
-        Handles all three reply shapes these instruments use: bare value
-        ("24.21"), echo-plus-value ("MSTRCTL? 0", "#SCBKLT? 5"), and pure echo.
-        """
-        line_s, sent_s = line.strip(), sent.strip()
-        if line_s.upper() == sent_s.upper():
-            return None
-        if line_s.upper().startswith(sent_s.upper()):
-            remainder = line_s[len(sent_s):].strip()
-            return remainder or None
-        return line_s
+    _strip_echo = staticmethod(lambda line, sent: strip_echo(line, sent))
 
     def _transact(self, command: str, expect_reply: bool = True,
                   max_lines: int = 4, allow_echo_reply: bool = False) -> str:
