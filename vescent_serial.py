@@ -304,7 +304,14 @@ class VescentSerialDevice:
         """
         self._check_read_only(command)
         if not self.is_open:
-            raise VescentError("serial port is not open")
+            # Most commonly the port got closed out from under us by a
+            # reconnect that hasn't caught up yet (or never ran). Try to
+            # reopen before giving up -- if that also fails it raises
+            # (typically an OSError from pyserial), which read_all() lets
+            # propagate so the caller's reconnect logic gets another shot
+            # instead of this looping as a silent per-field failure forever.
+            log.warning("%s: port not open, attempting to reopen", self.port)
+            self.open()
         with self._lock:
             payload = command.strip().encode("ascii") + self.TERMINATOR
             log.debug("TX: %s", command.strip())
