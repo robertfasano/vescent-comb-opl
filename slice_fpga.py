@@ -40,6 +40,17 @@ log = logging.getLogger("vescent.slice_fpga")
 SliceFPGAError = VescentError
 
 
+class ConnectionLostError(VescentError):
+    """The TCP connection to the SLICE-FPGA bridge is gone.
+
+    Distinct from NoResponseError/ResponseParseError (a single bad reply):
+    once this fires every remaining query in the sweep would fail identically,
+    so read_all() lets it propagate instead of recording it as a per-field
+    failure -- that's what tells the monitor loop to reconnect rather than
+    silently accumulating failures forever.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Telnet protocol bytes (RFC 854)
 # ---------------------------------------------------------------------------
@@ -63,7 +74,17 @@ _NEGOTIATION = (DO, DONT, WILL, WONT)
 
 MONITOR_PARAMS: Tuple[Param, ...] = (
     # Confirmed working from the PuTTY session; units not yet known.
-    Param("creffreq", "creffreq?", parse_float, "reference", "?"),
+    Param("fceo_output_voltage", "coutvolt?", parse_float, "fceo", "V"),
+    Param("fceo_snr", "csnr?", parse_float, "fceo", "dB"),
+    Param("fceo_phase_noise", "cphnoisestd?", parse_float, "fceo", "dB"),
+    Param("fceo_peak_freq", "cpeakfreq?", parse_float, "fceo", "dB"),
+    Param("fceo_ref_freq", "creffreq?", parse_float, "fceo", "dB"),
+
+    Param("fopt_output_voltage", "ooutvolt?", parse_float, "fopt", "V"),
+    Param("fopt_snr", "osnr?", parse_float, "fopt", "dB"),
+    Param("fopt_phase_noise", "ophnoisestd?", parse_float, "fopt", "dB"),
+    Param("fopt_peak_freq", "opeakfreq?", parse_float, "fopt", "dB"),
+    Param("fopt_ref_freq", "oreffreq?", parse_float, "fopt", "dB"),
 )
 
 
@@ -249,16 +270,16 @@ class SliceFPGA:
     def _recv(self) -> bytes:
         """One recv() worth of payload, IAC removed. b'' on timeout."""
         if self._sock is None:
-            raise VescentError("not connected")
+            raise ConnectionLostError("not connected")
         try:
             chunk = self._sock.recv(4096)
         except socket.timeout:
             return b""
         except OSError as exc:
-            raise VescentError(f"connection to {self.address} failed: {exc}") from exc
+            raise ConnectionLostError(f"connection to {self.address} failed: {exc}") from exc
         if chunk == b"":
             self.close()
-            raise VescentError(f"{self.address} closed the connection")
+            raise ConnectionLostError(f"{self.address} closed the connection")
         return self._handle_iac(chunk)
 
     def _read_line(self, timeout: Optional[float] = None) -> str:
@@ -326,14 +347,14 @@ class SliceFPGA:
         """Send one command and return the first non-echo reply line."""
         self._check_read_only(command)
         if self._sock is None:
-            raise VescentError("not connected")
+            raise ConnectionLostError("not connected")
         payload = command.strip().encode("ascii") + self.terminator
         log.debug("TX: %s", command.strip())
         self._buf.clear()          # discard anything stale before asking
         try:
             self._sock.sendall(payload)
         except OSError as exc:
-            raise VescentError(f"send to {self.address} failed: {exc}") from exc
+            raise ConnectionLostError(f"send to {self.address} failed: {exc}") from exc
         if not expect_reply:
             time.sleep(self.inter_command_delay)
             return ""
@@ -381,7 +402,7 @@ class SliceFPGA:
         """
         self._check_read_only(command)
         if self._sock is None:
-            raise VescentError("not connected")
+            raise ConnectionLostError("not connected")
         self._buf.clear()
         self._sock.sendall(command.strip().encode("ascii") + self.terminator)
         lines: List[str] = []
@@ -415,6 +436,13 @@ class SliceFPGA:
 
     # -- monitoring integration ---------------------------------------------
 
+    def idn(self) -> str:
+        """No documented ID string for the FPGA IPC bridge (undocumented API,
+        no confirmed *IDN?-equivalent) -- report the endpoint instead, so the
+        startup identification pass has something to print without guessing
+        at a command that might not be a query."""
+        return f"SLICE-FPGA @ {self.address}"
+
     def derived_fields(self, values: Dict[str, Any]) -> Dict[str, Any]:
         """Hook for computed fields once the API is understood."""
         return {}
@@ -424,15 +452,24 @@ class SliceFPGA:
         params: Optional[Sequence[Param]] = None,
         include_derived: bool = True,
     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
-        """Poll every parameter in the table once, exactly like the serial
-        drivers: one bad reply is recorded as a failure, not an aborted sweep."""
+        """Poll every parameter in the table once.
+
+        A single bad *reply* (timeout, garbled line) is recorded as a failure,
+        not an aborted sweep -- same policy as the serial drivers. A
+        ConnectionLostError is different: the socket itself is gone, every
+        remaining query would fail identically, so it propagates instead of
+        being folded into *failures* -- that's what lets the monitor loop's
+        reconnect logic take over instead of this looping forever.
+        """
         params = self.MONITOR_PARAMS if params is None else params
         values: Dict[str, Any] = {}
         failures: Dict[str, str] = {}
         for p in params:
             try:
                 values[p.key] = self.query(p.command, p.parser)
-            except (VescentError, ValueError, OSError) as exc:
+            except ConnectionLostError:
+                raise
+            except (VescentError, ValueError) as exc:
                 failures[p.key] = f"{type(exc).__name__}: {exc}"
                 log.warning("Failed to read %s (%s): %s", p.key, p.command, exc)
         if include_derived and values:

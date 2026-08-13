@@ -1,8 +1,8 @@
 # vescent-comb-opl
 
-Python drivers for the Vescent **RUBRIComb** frequency comb and **SLICE-OPL**
-offset phase lock servo, plus a read-only monitoring loop that logs every
-instrument parameter to InfluxDB.
+Python drivers for the Vescent **RUBRIComb** frequency comb, **SLICE-FPGA**
+comb-locking electronics, and **SLICE-OPL** offset phase lock servo, plus a
+read-only monitoring loop that logs every instrument parameter to InfluxDB.
 
 Written against:
 
@@ -10,20 +10,27 @@ Written against:
 |---|---|---|
 | RUBRIComb  | Serial API Guide Rev 01 | SC 1.241, G2 1.19, AMP/OSC LD 1.22 |
 | SLICE-OPL  | Serial API Guide Rev 01 | SC 1.242, OPL 1.27 |
+| SLICE-FPGA | undocumented -- `slice_fpga.MONITOR_PARAMS` reflects only what's been confirmed working from a PuTTY session against the vendor software's Telnet/IPC bridge | n/a |
 
 ## Layout
 
 | File | Contents |
 |---|---|
-| `vescent_serial.py` | Shared transport: serial I/O, echo handling, response parsers, `Param` table type, read-only enforcement, Influx sinks, monitor loop |
+| `vescent_serial.py` | Shared serial transport: I/O, echo handling, response parsers, `Param` table type, read-only enforcement, Influx sinks, monitor loop |
 | `rubricomb.py` | `RubriComb` driver + `MONITOR_PARAMS` (30 parameters) |
 | `slice_opl.py` | `SliceOPL` driver + `MONITOR_PARAMS` (59 parameters) |
+| `slice_fpga.py` | `SliceFPGA` Telnet/socket driver + `MONITOR_PARAMS`, for the SLICE-FPGA IPC bridge |
 | `main.py` | Read-only entry point: reads `config.yaml`, connects to every configured box, logs to Influx |
-| `config.yaml` | Instrument config: serial defaults, Influx settings, one RUBRIComb, any number of SLICE-OPLs |
+| `config.yaml` | Instrument config: serial defaults, Influx settings, one RUBRIComb, one SLICE-FPGA, any number of SLICE-OPLs |
 | `test_mock.py` | Offline test against simulated instruments (no hardware needed) |
 
-Both instruments speak the same protocol — 8N1, no flow control, CR-terminated
-case-insensitive ASCII — so everything except the command sets is shared.
+RUBRIComb and SLICE-OPL speak the same serial protocol — 8N1, no flow control,
+CR-terminated case-insensitive ASCII — so everything except the command sets
+is shared via `vescent_serial.py`. SLICE-FPGA is different: it isn't reachable
+over a COM port at all, only through the vendor control software's Telnet/IPC
+bridge (`127.0.0.1:65432` by default), so `slice_fpga.py` implements its own
+socket transport but mirrors the same `open()`/`close()`/`query()`/`read_all()`
+interface so it drops into the same monitoring loop.
 
 ## Install
 
@@ -64,6 +71,11 @@ rubricomb:
   port: COM7
   measurement: rubricomb
 
+slice_fpga:
+  host: 127.0.0.1        # the vendor software's Telnet/IPC bridge, not a COM port
+  port: 65432
+  measurement: slice_fpga
+
 slice_opls:
   - name: opl-556          # Influx measurement name -- must be unique
     port: COM5
@@ -72,7 +84,7 @@ slice_opls:
     # baud: 9600            # per-entry override of the 'serial' defaults
 ```
 
-Either the `rubricomb` section or `slice_opls` list may be omitted if you don't
+Any of `rubricomb`, `slice_fpga`, or `slice_opls` may be omitted if you don't
 have that instrument. Set `INFLUX_URL` / `INFLUX_ORG` (and `INFLUX_TOKEN`, if
 you'd rather not put it in the config) in your shell profile or service
 environment:
@@ -121,10 +133,18 @@ API breaks the `?` convention in both directions:
 * `NOCP`, `DDSAUTO`, `_SELFCAL`, `_FACTORY` **change state** with no `?` →
   never treated as reads.
 
-`main.py` hardcodes `read_only=True`, invokes no startup/shutdown sequence, and
-opens ports with DTR/RTS deasserted so that connecting cannot pulse a reset into
-the USB front end. Running it twice, or killing it mid-sweep, leaves the
-hardware untouched.
+SLICE-FPGA is the exception: its command set is undocumented, so there's no
+allowlist to build. `SliceFPGA(read_only=True)` falls back to a heuristic --
+block anything not ending in `?` -- which is not a guarantee the way the
+serial drivers' check is, just a floor. `main.py` only ever sends the
+`?`-terminated commands in `slice_fpga.MONITOR_PARAMS`, so that's enough for
+the monitoring loop; anything more (`SliceFPGA.command()`, `.probe()`, the
+`python slice_fpga.py` interactive prompt) is on you to keep to queries.
+
+`main.py` hardcodes `read_only=True` for every device, invokes no
+startup/shutdown sequence, and opens serial ports with DTR/RTS deasserted so
+that connecting cannot pulse a reset into the USB front end. Running it twice,
+or killing it mid-sweep, leaves the hardware untouched.
 
 ## Monitoring
 
@@ -135,6 +155,12 @@ the table and returns `(values, failures)` — a timeout or malformed reply drop
 that one field and logs a warning instead of aborting the sweep. A
 `read_failures` count goes into every point so a degrading link is visible on
 the dashboard.
+
+A dead connection (port unplugged/access denied, or the SLICE-FPGA socket
+dropped) is treated differently from a bad reply: it aborts the sweep instead
+of being recorded as 59 identical per-field failures, which is what lets
+`monitor()`'s reconnect logic (close + reopen, retried every 5 s) actually
+kick in instead of the device silently going dark for the rest of the run.
 
 Derived fields are computed per instrument: the RUBRIComb decodes its three
 `*ERROR?` bitmasks into `cavity_ok` / `oscillator_ok` / `amplifier_ok`, and the
@@ -170,3 +196,8 @@ inside `LOCKRNG?`.
   examples show a channel argument; sent bare. Add the argument to the `Param`
   command string if your firmware wants it.
 * `_FACTORY` is deliberately not implemented — it wipes system calibration.
+* SLICE-FPGA requires the vendor control software to be running with its
+  Telnet/IPC bridge listening (default `127.0.0.1:65432`) -- `slice_fpga.py`
+  is a client to that bridge, not a direct connection to the FPGA hardware.
+  Its `MONITOR_PARAMS` units are marked `dB` as placeholders pending
+  confirmation against the actual firmware documentation.

@@ -39,6 +39,17 @@ rubricomb:
   # timeout: 2.0
   # assert_dtr: false
 
+# -- SLICE-FPGA (single instrument) ------------------------------------------
+# Connects over the SLICE-FPGA software's Telnet/IPC bridge, not a COM port --
+# 127.0.0.1:65432 is that software's default, so this is normally only
+# changed if it runs on another machine or a non-default port. Comment out
+# this whole section if you don't have a SLICE-FPGA connected.
+slice_fpga:
+  host: 127.0.0.1
+  port: 65432
+  measurement: slice_fpga   # Influx measurement name
+  # timeout: 2.0
+
 # -- SLICE-OPLs (any number) -------------------------------------------------
 # One entry per unit. 'name' is both the label printed at startup and the
 # InfluxDB measurement it's logged under, so it must be unique across entries.

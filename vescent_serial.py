@@ -551,9 +551,14 @@ class ConsoleSink:
 
 @dataclass
 class MonitoredDevice:
-    """One instrument in the polling loop."""
+    """One instrument in the polling loop.
+
+    device is typically a VescentSerialDevice subclass, but anything duck-
+    typing the same interface works too -- SliceFPGA (Telnet/socket, not
+    serial) is a MonitoredDevice without being a VescentSerialDevice.
+    """
     measurement: str
-    device: VescentSerialDevice
+    device: Any
     params: Optional[Sequence[Param]] = None
 
 
@@ -605,12 +610,13 @@ def monitor(
         stop_event.wait(sleep_for)
 
 
-def _try_reconnect(device: VescentSerialDevice, delay: float = 5.0) -> None:
-    log.info("Attempting to reopen %s in %.0f s", device.port, delay)
+def _try_reconnect(device: Any, delay: float = 5.0) -> None:
+    where = getattr(device, "address", getattr(device, "port", "?"))
+    log.info("Attempting to reopen %s in %.0f s", where, delay)
     time.sleep(delay)
     try:
         device.close()
         device.open()
-        log.info("Serial link to %s reestablished", device.port)
+        log.info("Connection to %s reestablished", where)
     except Exception as exc:
         log.error("Reconnect failed: %s", exc)

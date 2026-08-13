@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-main.py -- read-only monitor for the Vescent RUBRIComb and one or more
-SLICE-OPLs.
+main.py -- read-only monitor for the Vescent RUBRIComb, SLICE-FPGA, and one
+or more SLICE-OPLs.
 
-Instruments, serial settings, and InfluxDB connection are all defined in a
-YAML config file rather than passed on the command line, so a lab running
-several SLICE-OPL channels doesn't need a wall of flags -- each unit just
-gets an entry with its own name (Influx measurement) and COM port. See
+Instruments, serial/network settings, and InfluxDB connection are all defined
+in a YAML config file rather than passed on the command line, so a lab
+running several SLICE-OPL channels doesn't need a wall of flags -- each unit
+just gets an entry with its own name (Influx measurement) and COM port. See
 config.yaml for the full schema.
 
 STRICTLY READ-ONLY
@@ -21,6 +21,11 @@ This script cannot change instrument state:
     does not pulse a reset into the USB front end.
 Running it twice, or interrupting it mid-sweep, leaves the hardware exactly as
 it was.
+
+One caveat for the SLICE-FPGA: its command set is undocumented, so its
+read_only guard is a heuristic (blocks anything not ending in '?') rather than
+the serial drivers' allowlist. That's still enough to cover this script, since
+it only ever sends the '?'-terminated commands in slice_fpga.MONITOR_PARAMS.
 
 Usage
 -----
@@ -45,6 +50,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import yaml
 
 from rubricomb import RubriComb
+from slice_fpga import SliceFPGA
 from slice_opl import SliceOPL
 from vescent_serial import (
     BatchedInfluxSink,
@@ -119,11 +125,12 @@ def build_devices(cfg: Dict[str, Any]) -> Optional[List[MonitoredDevice]]:
     invalid; callers should return exit code 2 in that case.
     """
     rubricomb_cfg = cfg.get("rubricomb")
+    slice_fpga_cfg = cfg.get("slice_fpga")
     slice_opl_cfgs = cfg.get("slice_opls") or []
 
-    if not rubricomb_cfg and not slice_opl_cfgs:
-        print("No instruments configured -- add a 'rubricomb' and/or "
-              "'slice_opls' section to the config file.", file=sys.stderr)
+    if not rubricomb_cfg and not slice_fpga_cfg and not slice_opl_cfgs:
+        print("No instruments configured -- add a 'rubricomb', 'slice_fpga', "
+              "and/or 'slice_opls' section to the config file.", file=sys.stderr)
         return None
 
     names = [entry.get("name") for entry in slice_opl_cfgs]
@@ -140,6 +147,15 @@ def build_devices(cfg: Dict[str, Any]) -> Optional[List[MonitoredDevice]]:
             return None
         comb = RubriComb(rubricomb_cfg["port"], **_serial_kwargs(cfg, rubricomb_cfg))
         devices.append(MonitoredDevice(rubricomb_cfg.get("measurement", "rubricomb"), comb))
+
+    if slice_fpga_cfg:
+        fpga = SliceFPGA(
+            host=slice_fpga_cfg.get("host", SliceFPGA.DEFAULT_HOST),
+            port=slice_fpga_cfg.get("port", SliceFPGA.DEFAULT_PORT),
+            timeout=slice_fpga_cfg.get("timeout", 2.0),
+            read_only=True,   # not configurable on purpose: this script only reads
+        )
+        devices.append(MonitoredDevice(slice_fpga_cfg.get("measurement", "slice_fpga"), fpga))
 
     for entry in slice_opl_cfgs:
         name, port = entry.get("name"), entry.get("port")
@@ -185,8 +201,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             try:
                 print(f"{entry.measurement}: {entry.device.idn()}")
             except VescentError as exc:
+                where = getattr(entry.device, "address", entry.device.port)
                 log.error("[%s] identification failed on %s: %s",
-                          entry.measurement, entry.device.port, exc)
+                          entry.measurement, where, exc)
 
         sink = make_sink(cfg, args.dry_run)
         stop = threading.Event()
