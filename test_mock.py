@@ -1,5 +1,5 @@
 """Smoke test for the Vescent drivers against simulated instruments."""
-import threading, time
+import os, tempfile, threading, time
 from vescent_serial import (MonitoredDevice, ConsoleSink, ReadOnlyError,
                             monitor, sweep_once)
 from rubricomb import RubriComb, MasterMode, decode_error
@@ -178,9 +178,21 @@ vals, fails = opl.read_all()
 assert set(fails) == {"adc_integrator_mon", "pll_gain"}, fails
 print(f"\ndegraded sweep: {len(vals)} fields, failures={sorted(fails)}")
 
-# --- main() CLI ------------------------------------------------------------
+# --- main() CLI --------------------------------------------------------
 import main as main_mod
-rc = main_mod.main(["--once"])
+
+rc = main_mod.main(["--once", "--config", "/nonexistent/config.yaml"])
 assert rc == 2, rc
-print("\nmain() with no ports -> exit 2")
+print("\nmain() with missing config file -> exit 2")
+
+with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+    f.write("influx:\n  bucket: test\n")  # no rubricomb / slice_opls
+    empty_cfg = f.name
+try:
+    rc = main_mod.main(["--once", "--config", empty_cfg])
+    assert rc == 2, rc
+    print("main() with no instruments configured -> exit 2")
+finally:
+    os.unlink(empty_cfg)
+
 print("ALL TESTS PASSED")

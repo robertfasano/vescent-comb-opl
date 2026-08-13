@@ -1,0 +1,50 @@
+# config.yaml -- instrument + InfluxDB configuration for main.py
+#
+# Run with:
+#
+#   python main.py --once --dry-run
+#   python main.py -v
+#
+# main.py defaults to reading ./config.yaml, so no --config flag is needed
+# for the usual case.
+
+# -- serial defaults, applied to every device below unless overridden -------
+serial:
+  baud: 115200
+  timeout: 2.0        # seconds
+  assert_dtr: false   # leave DTR/RTS deasserted so opening the port can't
+                       # pulse a reset into the USB front end
+
+# -- InfluxDB ----------------------------------------------------------------
+# url and org are intentionally not set here -- they come from the
+# INFLUX_URL / INFLUX_ORG environment variables (falls back to
+# http://localhost:8086 / yblab if those aren't set). Set them in your shell
+# profile or systemd unit rather than committing them here.
+influx:
+  bucket: vescent-demo
+  # token: ""          # falls back to INFLUX_TOKEN env var if omitted
+  mode: per-field       # per-field (default) | batched -- see README
+  device_tag: ""        # extra Influx tag, batched mode only
+
+# -- polling -------------------------------------------------------------
+polling:
+  interval: 10.0       # seconds between sweeps (ignored with --once)
+
+# -- RUBRIComb (single instrument) -------------------------------------------
+# Comment out this whole section if you don't have a RUBRIComb connected.
+rubricomb:
+  port: COM7
+  measurement: rubricomb   # Influx measurement name
+  # baud: 115200            # uncomment to override the 'serial' defaults above
+  # timeout: 2.0
+  # assert_dtr: false
+
+# -- SLICE-OPLs (any number) -------------------------------------------------
+# One entry per unit. 'name' is both the label printed at startup and the
+# InfluxDB measurement it's logged under, so it must be unique across entries.
+slice_opls:
+  - name: opl-556
+    port: COM5
+
+  - name: opl-reprate
+    port: COM8

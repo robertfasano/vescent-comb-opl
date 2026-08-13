@@ -18,7 +18,8 @@ Written against:
 | `vescent_serial.py` | Shared transport: serial I/O, echo handling, response parsers, `Param` table type, read-only enforcement, Influx sinks, monitor loop |
 | `rubricomb.py` | `RubriComb` driver + `MONITOR_PARAMS` (30 parameters) |
 | `slice_opl.py` | `SliceOPL` driver + `MONITOR_PARAMS` (59 parameters) |
-| `main.py` | Read-only entry point: connects to both boxes and logs to Influx |
+| `main.py` | Read-only entry point: reads `config.yaml`, connects to every configured box, logs to Influx |
+| `config.yaml` | Instrument config: serial defaults, Influx settings, one RUBRIComb, any number of SLICE-OPLs |
 | `test_mock.py` | Offline test against simulated instruments (no hardware needed) |
 
 Both instruments speak the same protocol — 8N1, no flow control, CR-terminated
@@ -27,25 +28,71 @@ case-insensitive ASCII — so everything except the command sets is shared.
 ## Install
 
 ```bash
-pip install pyserial influxdb-client
+pip install -r requirements.txt   # pyserial, influxdb-client, PyYAML
 ```
 
 Drop `influx_example.py` (the `write_point` helper) alongside these files and it
-is imported automatically; without it an equivalent fallback is used, configured
-from `INFLUX_URL` / `INFLUX_TOKEN` / `INFLUX_ORG` / `INFLUX_BUCKET` or the CLI
-flags.
+is imported automatically; without it an equivalent fallback is used.
+
+`INFLUX_URL` and `INFLUX_ORG` are read from the environment (falling back to
+`http://localhost:8086` / `yblab` if unset) rather than from the config file,
+since they tend to be per-machine rather than per-instrument-set. `INFLUX_TOKEN`
+works the same way and can also be set via `influx.token` in the config.
+`INFLUX_BUCKET` is likewise honored as an env var but is normally set via
+`influx.bucket` in the config, below.
+
+## Configuration
+
+`main.py` takes no per-instrument flags -- ports, measurement names, and Influx
+settings all live in `config.yaml`, so a rig with several SLICE-OPL channels
+doesn't need a wall of command-line arguments:
+
+```yaml
+serial:
+  baud: 115200
+  timeout: 2.0
+  assert_dtr: false
+
+influx:
+  bucket: vescent-demo
+  mode: per-field
+
+polling:
+  interval: 10.0
+
+rubricomb:
+  port: COM7
+  measurement: rubricomb
+
+slice_opls:
+  - name: opl-556          # Influx measurement name -- must be unique
+    port: COM5
+  - name: opl-reprate
+    port: COM8
+    # baud: 9600            # per-entry override of the 'serial' defaults
+```
+
+Either the `rubricomb` section or `slice_opls` list may be omitted if you don't
+have that instrument. Set `INFLUX_URL` / `INFLUX_ORG` (and `INFLUX_TOKEN`, if
+you'd rather not put it in the config) in your shell profile or service
+environment:
+
+```bash
+export INFLUX_URL=http://localhost:8086
+export INFLUX_ORG=yblab
+```
 
 ## Usage
 
 ```bash
-# one snapshot of both boxes, printed, nothing written to Influx
-python main.py --rubricomb-port /dev/ttyUSB0 --opl-port /dev/ttyUSB1 --once --dry-run
+# one snapshot of every configured instrument, printed, nothing written to Influx
+python main.py --once --dry-run
 
-# continuous logging every 10 s
-python main.py --rubricomb-port /dev/ttyUSB0 --opl-port /dev/ttyUSB1 --interval 10 -v
+# continuous logging at the interval set in the config
+python main.py -v
 
-# one instrument only
-python main.py --opl-port /dev/ttyUSB1 --interval 5
+# point at a config file that isn't ./config.yaml
+python main.py --config /path/to/other_config.yaml
 
 # offline tests
 python test_mock.py
@@ -96,10 +143,10 @@ inside `LOCKRNG?`.
 
 ### Influx notes
 
-* `--influx-mode per-field` (default) uses the attached `write_point`, opening a
+* `influx.mode: per-field` (default) uses the attached `write_point`, opening a
   client per field: ~30 connections per RUBRIComb sweep, ~59 per SLICE-OPL
   sweep. Fine at 10 s on localhost.
-* `--influx-mode batched` keeps one client alive and writes one point per device
+* `influx.mode: batched` keeps one client alive and writes one point per device
   per sweep, all fields sharing a timestamp. Use it below ~10 s cadence; it also
   makes Flux joins across channels exact.
 * Numeric values are cast to `float` before writing, since Influx rejects a
