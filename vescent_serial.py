@@ -175,38 +175,44 @@ class VescentSerialDevice:
         DTR asserted pulses the line, which some microcontroller front ends
         interpret as a reset. Pass assert_dtr=True if your unit needs them.
         """
-        if self._ser is not None and getattr(self._ser, "is_open", False):
-            return
-        if serial is None:
-            raise VescentError("pyserial is not installed -- run `pip install pyserial`")
-        log.info("Opening %s at %d baud (read_only=%s)", self.port, self.baudrate,
-                 self.read_only)
-        ser = serial.Serial()
-        ser.port = self.port
-        ser.baudrate = self.baudrate
-        ser.bytesize = 8          # 8 data bits
-        ser.parity = "N"          # no parity
-        ser.stopbits = 1          # 1 stop bit
-        ser.rtscts = False        # no flow control
-        ser.xonxoff = False
-        ser.dsrdtr = False
-        ser.timeout = self.timeout
-        ser.write_timeout = self.write_timeout
-        if not self.assert_dtr:
-            ser.dtr = False
-            ser.rts = False
-        ser.open()
-        self._ser = ser
-        time.sleep(0.1)
-        self._ser.reset_input_buffer()
-        self._ser.reset_output_buffer()
+        with self._lock:
+            if self._ser is not None and getattr(self._ser, "is_open", False):
+                return
+            if serial is None:
+                raise VescentError("pyserial is not installed -- run `pip install pyserial`")
+            log.info("Opening %s at %d baud (read_only=%s)", self.port, self.baudrate,
+                     self.read_only)
+            ser = serial.Serial()
+            ser.port = self.port
+            ser.baudrate = self.baudrate
+            ser.bytesize = 8          # 8 data bits
+            ser.parity = "N"          # no parity
+            ser.stopbits = 1          # 1 stop bit
+            ser.rtscts = False        # no flow control
+            ser.xonxoff = False
+            ser.dsrdtr = False
+            ser.timeout = self.timeout
+            ser.write_timeout = self.write_timeout
+            if not self.assert_dtr:
+                ser.dtr = False
+                ser.rts = False
+            ser.open()
+            self._ser = ser
+            time.sleep(0.1)
+            self._ser.reset_input_buffer()
+            self._ser.reset_output_buffer()
 
     def close(self) -> None:
-        if self._ser is not None:
-            try:
-                self._ser.close()
-            except Exception:  # pragma: no cover
-                pass
+        # Held for the whole close so it can't run while _transact() is
+        # mid-write/read on another thread -- closing out from under an
+        # in-flight transaction is what turns a normal disconnect into a
+        # WriteFile/PermissionError on the *next* call instead of a clean one.
+        with self._lock:
+            if self._ser is not None:
+                try:
+                    self._ser.close()
+                except Exception:  # pragma: no cover
+                    pass
 
     def __enter__(self):
         self.open()
@@ -362,9 +368,13 @@ class VescentSerialDevice:
         """Poll every parameter once.
 
         Returns ``(values, failures)`` where *failures* maps field name to the
-        error text. A single bad reply never aborts the sweep -- partial data
-        beats no data when you are trying to see what the instrument did at
-        3 a.m.
+        error text. A single bad *reply* (timeout, garbled line) never aborts
+        the sweep -- partial data beats no data when you are trying to see
+        what the instrument did at 3 a.m. An OSError is different: it means
+        the port itself is broken (unplugged, access denied, ...), every
+        remaining query would fail identically, and the caller needs to know
+        the whole sweep failed so it can reconnect -- so it propagates
+        instead of being folded into *failures*.
         """
         params = self.MONITOR_PARAMS if params is None else params
         values: Dict[str, Any] = {}
@@ -372,7 +382,7 @@ class VescentSerialDevice:
         for p in params:
             try:
                 values[p.key] = self.query(p.command, p.parser)
-            except (VescentError, ValueError, OSError) as exc:
+            except (VescentError, ValueError) as exc:
                 failures[p.key] = f"{type(exc).__name__}: {exc}"
                 log.warning("Failed to read %s (%s): %s", p.key, p.command, exc)
         if include_derived and values:
