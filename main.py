@@ -117,11 +117,29 @@ def make_sink(cfg: Dict[str, Any], dry_run: bool) -> Any:
     return PerFieldInfluxSink(icfg)
 
 
+def _connect(measurement: str, factory: Any) -> Optional[Any]:
+    """Run *factory* (a zero-arg callable that constructs and opens one
+    device) and return the device, or None if the initial connection fails.
+
+    A bad cable or a box that's powered off on one channel prints one line
+    and gets skipped, rather than taking every other configured device down
+    with it."""
+    try:
+        return factory()
+    except (VescentError, OSError) as exc:
+        print(f"{measurement}: could not connect ({exc}) -- skipping",
+              file=sys.stderr)
+        return None
+
+
 def build_devices(cfg: Dict[str, Any]) -> Optional[List[MonitoredDevice]]:
     """Construct and open every configured device.
 
-    Returns None (after printing a message to stderr) if the config is
-    invalid; callers should return exit code 2 in that case.
+    Returns None (after printing a message to stderr) if the config itself
+    is invalid, or if no device successfully connected; callers should
+    return exit code 2 in that case. A device that's individually
+    unreachable is skipped rather than treated as a config error -- see
+    _connect().
     """
     rubricomb_cfg = cfg.get("rubricomb")
     slice_fpga_cfg = cfg.get("slice_fpga")
@@ -144,16 +162,21 @@ def build_devices(cfg: Dict[str, Any]) -> Optional[List[MonitoredDevice]]:
         if not rubricomb_cfg.get("port"):
             print("rubricomb section is missing 'port'", file=sys.stderr)
             return None
-        comb = RubriComb(rubricomb_cfg["port"], **_serial_kwargs(cfg, rubricomb_cfg))
-        devices.append(MonitoredDevice(rubricomb_cfg.get("measurement", "rubricomb"), comb))
+        measurement = rubricomb_cfg.get("measurement", "rubricomb")
+        comb = _connect(measurement, lambda: RubriComb(
+            rubricomb_cfg["port"], **_serial_kwargs(cfg, rubricomb_cfg)))
+        if comb is not None:
+            devices.append(MonitoredDevice(measurement, comb))
 
     if slice_fpga_cfg:
-        fpga = SliceFPGA(
+        measurement = slice_fpga_cfg.get("measurement", "slice_fpga")
+        fpga = _connect(measurement, lambda: SliceFPGA(
             host=slice_fpga_cfg.get("host", SliceFPGA.DEFAULT_HOST),
             port=slice_fpga_cfg.get("port", SliceFPGA.DEFAULT_PORT),
             timeout=slice_fpga_cfg.get("timeout", 2.0),
-        )
-        devices.append(MonitoredDevice(slice_fpga_cfg.get("measurement", "slice_fpga"), fpga))
+        ))
+        if fpga is not None:
+            devices.append(MonitoredDevice(measurement, fpga))
 
     for entry in slice_opl_cfgs:
         name, port = entry.get("name"), entry.get("port")
@@ -163,8 +186,15 @@ def build_devices(cfg: Dict[str, Any]) -> Optional[List[MonitoredDevice]]:
             for d in devices:
                 d.device.close()
             return None
-        opl = SliceOPL(port, **_serial_kwargs(cfg, entry))
-        devices.append(MonitoredDevice(name, opl))
+        opl = _connect(name, lambda entry=entry, port=port: SliceOPL(
+            port, **_serial_kwargs(cfg, entry)))
+        if opl is not None:
+            devices.append(MonitoredDevice(name, opl))
+
+    if not devices:
+        print("No instruments could be connected -- see the errors above.",
+              file=sys.stderr)
+        return None
 
     return devices
 
